@@ -8,8 +8,8 @@ This module:
   until the error is within a deadband.
 """
 
-from time import sleep
 import math
+from time import sleep
 
 import cv2 as cv
 import numpy as np
