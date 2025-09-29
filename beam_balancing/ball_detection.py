@@ -1,3 +1,9 @@
+"""Ball Detection Module for Ball and Beam System.
+
+Computer vision functions for detecting and tracking ball position
+using HSV color filtering and contour analysis.
+"""
+
 # Ball Detection Module for Computer Vision Ball Tracking System
 # Detects colored balls in video frames using HSV color space filtering
 # Provides both class-based and legacy function interfaces

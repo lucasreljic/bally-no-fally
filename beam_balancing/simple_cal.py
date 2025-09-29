@@ -1,6 +1,8 @@
-# Simple Auto Calibration System for Ball and Beam Control
-# Interactive calibration tool for color detection, geometry, and servo limits
-# Generates config.json file for use with ball tracking controller
+"""Simple Auto Calibration System for Ball and Beam Control.
+
+Interactive calibration tool for color detection, geometry, and servo limits.
+Generates config.json file for use with ball tracking controller.
+"""
 
 import json
 import math
@@ -57,7 +59,7 @@ class SimpleAutoCalibrator:
             time.sleep(2)  # Allow time for connection to stabilize
             print("[SERVO] Connected")
             return True
-        except:
+        except serial.SerialException:
             print("[SERVO] Failed to connect - limits will be estimated")
             return False
 
@@ -77,7 +79,8 @@ class SimpleAutoCalibrator:
 
         Args:
             event: OpenCV mouse event type
-            x, y: Mouse click coordinates
+            x (int): Mouse click x-coordinate
+            y (int): Mouse click y-coordinate
             flags: Additional event flags
             param: User data (unused)
         """
@@ -96,7 +99,8 @@ class SimpleAutoCalibrator:
         """Sample HSV color values in a 5x5 region around click point.
 
         Args:
-            x, y: Center coordinates for color sampling
+            x (int): Center x-coordinate for color sampling
+            y (int): Center y-coordinate for color sampling
         """
         if self.current_frame is None:
             return

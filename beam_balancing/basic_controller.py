@@ -1,3 +1,9 @@
+"""Basic PID Controller for Ball and Beam System.
+
+Real-time ball position control using PID algorithm with interactive GUI
+for parameter tuning and live visualization of control performance.
+"""
+
 import json
 import queue
 import time
@@ -13,6 +19,12 @@ from ball_detection import detect_ball_x
 
 
 class BasicPIDController:
+    """Real-time PID controller for ball and beam balancing system.
+
+    Provides interactive GUI for tuning PID parameters while controlling
+    ball position using camera feedback and servo motor actuation.
+    """
+
     def __init__(self, config_file="config.json"):
         """Initialize controller, load config, set defaults and queues."""
         # Load experiment and hardware config from JSON file
@@ -64,7 +76,7 @@ class BasicPIDController:
             servo_angle = int(np.clip(servo_angle, 0, 30))
             try:
                 self.servo.write(bytes([servo_angle]))
-            except Exception:
+            except tk.TclError:
                 print("[SERVO] Send failed")
 
     def update_pid(self, position, dt=0.033):
@@ -72,16 +84,16 @@ class BasicPIDController:
         error = self.setpoint - position  # Compute error
         error = error * 100  # Scale error for easier tuning (if needed)
         # Proportional term
-        P = self.Kp * error
+        k_P = self.Kp * error
         # Integral term accumulation
         self.integral += error * dt
-        I = self.Ki * self.integral
+        k_I = self.Ki * self.integral
         # Derivative term calculation
         derivative = (error - self.prev_error) / dt
-        D = self.Kd * derivative
+        k_D = self.Kd * derivative
         self.prev_error = error
         # PID output (limit to safe beam range)
-        output = P + I + D
+        output = k_P + k_I + k_D
         output = np.clip(output, -15, 15)
         print(error)
         return output
@@ -105,7 +117,7 @@ class BasicPIDController:
                     if self.position_queue.full():
                         self.position_queue.get_nowait()
                     self.position_queue.put_nowait(position_m)
-                except Exception:
+                except queue.Full:
                     pass
             # Show processed video with overlays
             cv2.imshow("Ball Tracking", vis_frame)
@@ -304,7 +316,7 @@ class BasicPIDController:
         try:
             self.root.quit()
             self.root.destroy()
-        except Exception:
+        except tk.TclError:
             pass
 
     def run(self):
