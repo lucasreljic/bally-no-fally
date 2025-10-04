@@ -9,10 +9,20 @@ import os
 import time
 
 try:
-    import RPi.GPIO as GPIO
+    from gpiozero import Servo
+    from gpiozero.pins.pigpio import PiGPIOFactory
+
+    # Use pigpio for more precise PWM timing
+    try:
+        pin_factory = PiGPIOFactory()
+        print("[SERVO] Using pigpio pin factory for precise PWM")
+    except Exception as e:
+        pin_factory = None
+        print(f"[SERVO] Using default pin factory: {e}")
 except ImportError:
-    print("[SERVO] Warning: RPi.GPIO not available, using mock mode")
-    GPIO = None
+    print("[SERVO] Warning: gpiozero not available, using mock mode")
+    Servo = None
+    pin_factory = None
 
 
 class ServoController:
@@ -26,16 +36,16 @@ class ServoController:
         """
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
-        self.pwm_frequency = 50  # Standard servo frequency (50Hz)
-        self.min_pulse_width = 1.0  # Minimum pulse width in ms
-        self.max_pulse_width = 2.0  # Maximum pulse width in ms
-        self.center_pulse_width = 1.5  # Center position pulse width in ms
         self.min_angle = -45  # Minimum servo angle in degrees
         self.max_angle = 45  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
-        self.pwm = None
-        self.gpio_initialized = False
+        # gpiozero servo parameters
+        self.min_pulse_width = 1.0e-3  # 1ms in seconds
+        self.max_pulse_width = 2.0e-3  # 2ms in seconds
+
+        self.servo = None
+        self.servo_initialized = False
 
         # Load configuration from file if it exists
         if os.path.exists(config_file):
@@ -47,20 +57,14 @@ class ServoController:
                 if "servo" in config:
                     servo_config = config["servo"]
                     self.servo_pin = servo_config.get("pin", self.servo_pin)
-                    self.pwm_frequency = servo_config.get(
-                        "frequency", self.pwm_frequency
-                    )
-                    self.min_pulse_width = servo_config.get(
-                        "min_pulse_width", self.min_pulse_width
-                    )
-                    self.max_pulse_width = servo_config.get(
-                        "max_pulse_width", self.max_pulse_width
-                    )
-                    self.center_pulse_width = servo_config.get(
-                        "center_pulse_width", self.center_pulse_width
-                    )
                     self.min_angle = servo_config.get("min_angle", self.min_angle)
                     self.max_angle = servo_config.get("max_angle", self.max_angle)
+
+                    # Convert pulse widths from ms to seconds for gpiozero
+                    if "min_pulse_width" in servo_config:
+                        self.min_pulse_width = servo_config["min_pulse_width"] / 1000.0
+                    if "max_pulse_width" in servo_config:
+                        self.max_pulse_width = servo_config["max_pulse_width"] / 1000.0
 
                 print(
                     f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}° to {self.max_angle}°"
@@ -71,55 +75,58 @@ class ServoController:
         else:
             print("[SERVO] No config file found, using default servo settings")
 
-        # Initialize GPIO and PWM
-        self._initialize_gpio()
+        # Initialize servo
+        self._initialize_servo()
 
-    def _initialize_gpio(self):
-        """Initialize GPIO and PWM for servo control."""
-        if GPIO is None:
-            print("[SERVO] GPIO not available, running in mock mode")
+    def _initialize_servo(self):
+        """Initialize servo using gpiozero."""
+        if Servo is None:
+            print("[SERVO] gpiozero not available, running in mock mode")
             return
 
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.servo_pin, GPIO.OUT)
-
-            self.pwm = GPIO.PWM(self.servo_pin, self.pwm_frequency)
-            self.pwm.start(0)  # Start PWM with 0% duty cycle
+            # Create servo object with custom pulse widths
+            if pin_factory:
+                self.servo = Servo(
+                    self.servo_pin,
+                    min_pulse_width=self.min_pulse_width,
+                    max_pulse_width=self.max_pulse_width,
+                    pin_factory=pin_factory,
+                )
+            else:
+                self.servo = Servo(
+                    self.servo_pin,
+                    min_pulse_width=self.min_pulse_width,
+                    max_pulse_width=self.max_pulse_width,
+                )
 
             # Move to center position
             self.set_angle(0)
-            self.gpio_initialized = True
+            self.servo_initialized = True
 
-            print(f"[SERVO] GPIO initialized on pin {self.servo_pin}")
+            print(f"[SERVO] Servo initialized on pin {self.servo_pin}")
 
         except Exception as e:
-            print(f"[SERVO] GPIO initialization error: {e}")
+            print(f"[SERVO] Servo initialization error: {e}")
 
-    def _angle_to_duty_cycle(self, angle):
-        """Convert angle to PWM duty cycle.
+    def _angle_to_servo_value(self, angle):
+        """Convert angle to gpiozero servo value (-1 to +1).
 
         Args:
             angle (float): Servo angle in degrees
 
         Returns:
-            float: PWM duty cycle percentage
+            float: Servo value for gpiozero (-1 to +1)
         """
         # Clamp angle to valid range
         angle = max(self.min_angle, min(self.max_angle, angle))
 
-        # Map angle to pulse width
+        # Map angle to servo value (-1 to +1)
         angle_range = self.max_angle - self.min_angle
-        pulse_range = self.max_pulse_width - self.min_pulse_width
+        normalized = (angle - self.min_angle) / angle_range  # 0 to 1
+        servo_value = (normalized * 2.0) - 1.0  # -1 to +1
 
-        # Calculate pulse width for given angle
-        angle_normalized = (angle - self.min_angle) / angle_range
-        pulse_width = self.min_pulse_width + (angle_normalized * pulse_range)
-
-        # Convert pulse width to duty cycle (pulse_width in ms, period = 20ms for 50Hz)
-        duty_cycle = (pulse_width / 20.0) * 100.0
-
-        return duty_cycle
+        return servo_value
 
     def set_angle(self, angle):
         """Set servo to specific angle.
@@ -130,13 +137,13 @@ class ServoController:
         # Clamp angle to configured range
         angle = max(self.min_angle, min(self.max_angle, angle))
 
-        if self.pwm and self.gpio_initialized:
+        if self.servo and self.servo_initialized:
             try:
-                duty_cycle = self._angle_to_duty_cycle(angle)
-                self.pwm.ChangeDutyCycle(duty_cycle)
+                servo_value = self._angle_to_servo_value(angle)
+                self.servo.value = servo_value
                 self.current_angle = angle
 
-                print(f"[SERVO] Set angle: {angle:.1f}° (duty: {duty_cycle:.1f}%)")
+                print(f"[SERVO] Set angle: {angle:.1f}° (value: {servo_value:.3f})")
 
             except Exception as e:
                 print(f"[SERVO] Error setting angle: {e}")
@@ -171,12 +178,11 @@ class ServoController:
         return self.current_angle
 
     def cleanup(self):
-        """Clean up GPIO resources."""
-        if self.pwm and self.gpio_initialized:
+        """Clean up servo resources."""
+        if self.servo and self.servo_initialized:
             try:
-                self.pwm.stop()
-                GPIO.cleanup()
-                print("[SERVO] GPIO cleaned up")
+                self.servo.close()
+                print("[SERVO] Servo cleaned up")
             except Exception as e:
                 print(f"[SERVO] Cleanup error: {e}")
 
