@@ -8,189 +8,301 @@ This module:
   until the error is within a deadband.
 """
 
-import math
-from time import sleep
-
-import cv2 as cv
+import cv2 
 import numpy as np
-from gpiozero import DigitalOutputDevice
-
-# --- Motor setup ---
-ENA = DigitalOutputDevice(17)  # 3.3V power pin (driver enable, active-low)
-DIR = DigitalOutputDevice(27)  # GPIO 27 - Motor direction
-PUL = DigitalOutputDevice(22)  # GPIO 22 - Motor step pulse
-ENA.off()  # Enable driver (active low)
+import serial
+import time
+from threading import Thread
+import queue
+from ball_detection import detect_ball_x  
 
 
-def step(delay: float = 0.005) -> None:
-    """Emit a single step pulse to the stepper driver.
 
-    Args:
-        delay: Half-period delay (seconds) to set the pulse width / step rate.
-    """
-    PUL.on()
-    sleep(delay)
-    PUL.off()
-    sleep(delay)
+class PIDController:
+    def __init__(self, servo_port="/dev/ttyUSB0", neutral_angle=15,
+                 kp=10.0, ki=0.0, kd=0.0, scale_factor=0.25):
+        """ Initialize controller, load config, set defaults and queues. """
+        
+        # Load experiment and hardware config from JSON file (Alternate way)
+        # with open(config_file, 'r') as f:
+        #     self.config = json.load(f)
+        
+        # PID gains (controlled by sliders in GUI)
+        self.Kp = 10.0
+        self.Ki = 0.0
+        self.Kd = 0.0
+        # Scale factor for converting from pixels to meters
+        self.scale_factor = scale_factor
+        # Servo port name and center angle
+        self.servo_port = servo_port
+        self.neutral_angle = neutral_angle
+        self.servo = None
+        # Controller-internal state
+        self.setpoint = 0.0
+        self.integral = 0.0
+        self.prev_error = 0.0
+        # Data logs for plotting results (for debugging)
+        self.time_log = []
+        self.position_log = []
+        self.setpoint_log = []
+        self.control_log = []
+        self.start_time = None
+        # Thread-safe queue for most recent ball position measurement
+        self.position_queue = queue.Queue(maxsize=1)
+        self.running = False    # Main run flag for clean shutdown
 
+    
+    def connect_servo(self):
+        """Try to open serial connection to servo, return True if success."""
+        try:
+            self.servo = serial.Serial(self.servo_port, 9600, timeout=0.5)
+            time.sleep(1.5)
+            print("[SERVO] Connected")
+            return True
+        except Exception as e:
+            print(f"[SERVO] Connection Failed: {e}")
+            self.servo = None
+            return False
 
-def rotate_steps(n_steps: int, direction: int, delay: float = 0.005) -> None:
-    """Rotate the motor a given number of steps in a given direction.
+    def send_servo_angle(self, angle):
+        """Send angle command to servo motor (clipped for safety)."""
+        if not self.servo:
+            return
+        servo_angle = int(np.clip(self.neutral_angle + angle, 0, 30))
+        try:
+            self.servo.write(bytes([servo_angle]))
+        except Exception:
+            print("[SERVO] Send failed")
 
-    Args:
-        n_steps: Number of step pulses to send (>= 0).
-        direction: 1 for clockwise, 0 for counter-clockwise (driver-dependent).
-        delay: Per-step half-period delay in seconds (see `step`).
-    """
-    DIR.value = direction
-    for _ in range(n_steps):
-        step(delay)
+    def update_pid(self, position, dt=0.033):
+        """Perform PID calculation and return control output."""
+        
+        error = self.setpoint - position  # Compute error
+        error = error * 100  # Scale error for easier tuning (if needed)
+        # Proportional term
+        P = self.Kp * error
+        # Integral term accumulation
+        self.integral += error * dt
+        I = self.Ki * self.integral
+        # Derivative term calculation
+        derivative = (error - self.prev_error) / dt
+        D = self.Kd * derivative
+        self.prev_error = error
+        # PID output (limit to safe beam range)
+        output = P + I + D
+        output = np.clip(output, -15, 15)
+        
+        return output
 
+    def camera_thread(self):
+        """Dedicated thread for video capture and ball detection."""
+        
+        cap = cv2.VideoCapture(0)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+        
+        while self.running:
+            ret, frame = cap.read()
+            if not ret:
+                continue
+            
+            # Detect ball position in frame
+            found, x_normalized, vis_frame = detect_ball_x(frame)
+            if found:
+                # Convert normalized to meters using scale
+                position_m = x_normalized * self.scale_factor
+                # Always keep latest measurement only
+                try:
+                    if self.position_queue.full():
+                        self.position_queue.get_nowait()
+                    self.position_queue.put_nowait(position_m)
+                except Exception:
+                    pass
+            # Show processed video with overlays (comment out for speed)
+            # Live preview for debugging 
+            # cv2.imshow("Ball Tracking", vis_frame)
+            # if cv2.waitKey(1) & 0xFF == 27:  # ESC exits
+            #     self.running = False
+            #     break
+            
+        cap.release()
+        cv2.destroyAllWindows()
 
-# --- HSV color ranges ---
-ball_lower = np.array([8, 140, 88])
-ball_upper = np.array([50, 255, 255])
+    def control_thread(self):
+        """Runs PID control loop in parallel with GUI and camera."""
+        if not self.connect_servo():
+            print("[ERROR] No servo - running in simulation mode")
+            
+        self.start_time = time.time()
+        while self.running:
+            try:
+                # Wait for latest ball position from camera
+                position = self.position_queue.get(timeout=0.1)
+                # Compute control output using PID
+                control_output = self.update_pid(position)
+                # Send control command to servo (real or simulated)
+                self.send_servo_angle(control_output)
+                # Log results for plotting
+                current_time = time.time() - self.start_time
+                self.time_log.append(current_time)
+                self.position_log.append(position)
+                self.setpoint_log.append(self.setpoint)
+                self.control_log.append(control_output)
+                print(f"Pos: {position:.3f}m, Output: {control_output:.1f}°")
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[CONTROL] Error: {e}")
+                break
+        if self.servo:
+            # Return to neutral on exit
+            self.send_servo_angle(0)
+            self.servo.close()
 
-center_lower = np.array([75, 100, 100])
-center_upper = np.array([150, 255, 255])
+    # def create_gui(self):
+    #     """Build Tkinter GUI with large sliders and labeled controls."""
+        
+    #     self.root = tk.Tk()
+    #     self.root.title("Basic PID Controller")
+    #     self.root.geometry("520x400")
 
-tip_lower = np.array([55, 60, 19])
-tip_upper = np.array([77, 255, 255])
+    #     # Title label
+    #     ttk.Label(self.root, text="PID Gains", font=("Arial", 18, "bold")).pack(pady=10)
 
-kernel = np.ones((5, 5), np.uint8)
+    #     # Kp slider
+    #     ttk.Label(self.root, text="Kp (Proportional)", font=("Arial", 12)).pack()
+    #     self.kp_var = tk.DoubleVar(value=self.Kp)
+    #     kp_slider = ttk.Scale(self.root, from_=0, to=100, variable=self.kp_var,
+    #                           orient=tk.HORIZONTAL, length=500)
+    #     kp_slider.pack(pady=5)
+    #     self.kp_label = ttk.Label(self.root, text=f"Kp: {self.Kp:.1f}", font=("Arial", 11))
+    #     self.kp_label.pack()
 
-deg_per_step = 0.9
-deadband = 5.0
-step_delay = 0.005
+    #     # Ki slider
+    #     ttk.Label(self.root, text="Ki (Integral)", font=("Arial", 12)).pack()
+    #     self.ki_var = tk.DoubleVar(value=self.Ki)
+    #     ki_slider = ttk.Scale(self.root, from_=0, to=10, variable=self.ki_var,
+    #                           orient=tk.HORIZONTAL, length=500)
+    #     ki_slider.pack(pady=5)
+    #     self.ki_label = ttk.Label(self.root, text=f"Ki: {self.Ki:.1f}", font=("Arial", 11))
+    #     self.ki_label.pack()
 
-# --- Create control window with sliders ---
-cv.namedWindow("PID Control")
+    #     # Kd slider
+    #     ttk.Label(self.root, text="Kd (Derivative)", font=("Arial", 12)).pack()
+    #     self.kd_var = tk.DoubleVar(value=self.Kd)
+    #     kd_slider = ttk.Scale(self.root, from_=0, to=20, variable=self.kd_var,
+    #                           orient=tk.HORIZONTAL, length=500)
+    #     kd_slider.pack(pady=5)
+    #     self.kd_label = ttk.Label(self.root, text=f"Kd: {self.Kd:.1f}", font=("Arial", 11))
+    #     self.kd_label.pack()
 
+    #     # Setpoint slider
+    #     ttk.Label(self.root, text="Setpoint (meters)", font=("Arial", 12)).pack()
+    #     pos_min = self.config['calibration']['position_min_m']
+    #     pos_max = self.config['calibration']['position_max_m']
+    #     self.setpoint_var = tk.DoubleVar(value=self.setpoint)
+    #     setpoint_slider = ttk.Scale(self.root, from_=pos_min, to=pos_max,
+    #                                variable=self.setpoint_var,
+    #                                orient=tk.HORIZONTAL, length=500)
+    #     setpoint_slider.pack(pady=5)
+    #     self.setpoint_label = ttk.Label(self.root, text=f"Setpoint: {self.setpoint:.3f}m", font=("Arial", 11))
+    #     self.setpoint_label.pack()
 
-def nothing(_: int) -> None:
-    """No-op callback for OpenCV trackbars (required signature)."""
-    return
+    #     # Button group for actions
+    #     button_frame = ttk.Frame(self.root)
+    #     button_frame.pack(pady=20)
+    #     ttk.Button(button_frame, text="Reset Integral",
+    #                command=self.reset_integral).pack(side=tk.LEFT, padx=5)
+    #     ttk.Button(button_frame, text="Plot Results",
+    #                command=self.plot_results).pack(side=tk.LEFT, padx=5)
+    #     ttk.Button(button_frame, text="Stop",
+    #                command=self.stop).pack(side=tk.LEFT, padx=5)
 
+    #     # Schedule periodic GUI update
+    #     self.update_gui()
 
-cv.createTrackbar("Kp x100", "PID Control", 24, 30, nothing)
-cv.createTrackbar("Ki x1000", "PID Control", 0, 50, nothing)
-cv.createTrackbar("Kd x100", "PID Control", 4, 50, nothing)
+    # def update_gui(self):
+    #     """Reflect latest values from sliders into program and update display."""
+    #     if self.running:
+    #         # PID parameters
+    #         self.Kp = self.kp_var.get()
+    #         self.Ki = self.ki_var.get()
+    #         self.Kd = self.kd_var.get()
+    #         self.setpoint = self.setpoint_var.get()
+    #         # Update displayed values
+    #         self.kp_label.config(text=f"Kp: {self.Kp:.1f}")
+    #         self.ki_label.config(text=f"Ki: {self.Ki:.1f}")
+    #         self.kd_label.config(text=f"Kd: {self.Kd:.1f}")
+    #         self.setpoint_label.config(text=f"Setpoint: {self.setpoint:.3f}m")
+    #         # Call again after 50 ms (if not stopped)
+    #         self.root.after(50, self.update_gui)
 
-# --- Camera setup ---
-cap = cv.VideoCapture(0, cv.CAP_V4L2)
-cap.set(cv.CAP_PROP_FRAME_WIDTH, 480)
-cap.set(cv.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv.CAP_PROP_FPS, 30)
+    # def reset_integral(self):
+    #     """Clear integral error in PID (button handler)."""
+    #     self.integral = 0.0
+    #     print("[RESET] Integral term reset")
 
+    # def plot_results(self):
+    #     """Show matplotlib plots of position and control logs."""
+    #     if not self.time_log:
+    #         print("[PLOT] No data to plot")
+    #         return
+    #     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    #     # Ball position trace
+    #     ax1.plot(self.time_log, self.position_log, label="Ball Position", linewidth=2)
+    #     ax1.plot(self.time_log, self.setpoint_log, label="Setpoint",
+    #              linestyle="--", linewidth=2)
+    #     ax1.set_ylabel("Position (m)")
+    #     ax1.set_title(f"Basic PID Control (Kp={self.Kp:.1f}, Ki={self.Ki:.1f}, Kd={self.Kd:.1f})")
+    #     ax1.legend()
+    #     ax1.grid(True, alpha=0.3)
+    #     # Control output trace
+    #     ax2.plot(self.time_log, self.control_log, label="Control Output",
+    #              color="orange", linewidth=2)
+    #     ax2.set_xlabel("Time (s)")
+    #     ax2.set_ylabel("Beam Angle (degrees)")
+    #     ax2.legend()
+    #     ax2.grid(True, alpha=0.3)
+    #     plt.tight_layout()
+    #     plt.show()
 
-def find_largest_blob_center(mask: np.ndarray) -> np.ndarray | None:
-    """Find the centroid of the largest contour in a binary mask.
+    def stop(self):
+        """Stop everything and clean up threads and GUI."""
+        self.running = False
+        # Try to safely close all windows/resources
+        try:
+            self.root.quit()
+            self.root.destroy()
+        except Exception:
+            pass
 
-    Small blobs are rejected to reduce noise.
+    def run(self):
+        """Entry point: starts threads, launches GUI mainloop."""
+        print("[INFO] Starting Basic PID Controller")
 
-    Args:
-        mask: Binary mask (uint8) where 255 marks the regions of interest.
+        self.running = True
 
-    Returns:
-        2D numpy array [cx, cy] for the blob center, or None if not found.
-    """
-    cnts, _ = cv.findContours(mask, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE)
-    if cnts:
-        largest = max(cnts, key=cv.contourArea)
-        if cv.contourArea(largest) > 100:
-            M = cv.moments(largest)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                return np.array([cx, cy])
-    return None
+        # Start camera and control threads, mark as daemon for exit
+        cam_thread = Thread(target=self.camera_thread, daemon=True)
+        ctrl_thread = Thread(target=self.control_thread, daemon=True)
+        cam_thread.start()
+        ctrl_thread.start()
 
+        # Build and run GUI in main thread
+        # self.create_gui()
+        self.root.mainloop()
 
-# PID state
-integral = 0.0
-prev_error = 0.0
+        # After GUI ends, stop everything
+        self.running = False
+        print("[INFO] Controller stopped")
 
-print("Starting main loop. Press 'q' to quit.")
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-
-    frame = cv.resize(frame, (480, 480))
-    hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
-
-    mask_ball = cv.inRange(hsv, ball_lower, ball_upper)
-    mask_tip = cv.inRange(hsv, tip_lower, tip_upper)
-    mask_center = cv.inRange(hsv, center_lower, center_upper)
-
-    mask_ball = cv.morphologyEx(mask_ball, cv.MORPH_OPEN, kernel)
-    mask_tip = cv.morphologyEx(mask_tip, cv.MORPH_OPEN, kernel)
-    mask_center = cv.morphologyEx(mask_center, cv.MORPH_OPEN, kernel)
-
-    ball_pos = find_largest_blob_center(mask_ball)
-    tip_pos = find_largest_blob_center(mask_tip)
-    center_pos = find_largest_blob_center(mask_center)
-
-    if ball_pos is not None:
-        cv.circle(frame, tuple(ball_pos), 6, (0, 255, 255), -1)
-    if tip_pos is not None:
-        cv.circle(frame, tuple(tip_pos), 6, (0, 255, 0), -1)
-    if center_pos is not None:
-        cv.circle(frame, tuple(center_pos), 6, (255, 0, 255), -1)
-
-    if ball_pos is not None and tip_pos is not None and center_pos is not None:
-        v_ball = ball_pos - center_pos
-        v_tip = tip_pos - center_pos
-
-        angle_ball = math.atan2(v_ball[1], v_ball[0])
-        angle_tip = math.atan2(v_tip[1], v_tip[0])
-
-        # Wrap difference to (-pi, pi]
-        angle_error_rad = (angle_ball - angle_tip + math.pi) % (2 * math.pi) - math.pi
-        angle_error_deg = math.degrees(angle_error_rad)
-
-        # --- PID Calculation (live-tuned via trackbars) ---
-        Kp = cv.getTrackbarPos("Kp x100", "PID Control") / 100.0
-        Ki = cv.getTrackbarPos("Ki x1000", "PID Control") / 1000.0
-        Kd = cv.getTrackbarPos("Kd x100", "PID Control") / 100.0
-
-        integral += angle_error_deg
-        derivative = angle_error_deg - prev_error
-        prev_error = angle_error_deg
-
-        pid_output = Kp * angle_error_deg + Ki * integral + Kd * derivative
-        steps = int(abs(pid_output) / deg_per_step)
-
-        if abs(angle_error_deg) > deadband and steps > 0:
-            direction = 1 if pid_output > 0 else 0
-            print(
-                f"PID → Error: {angle_error_deg:.2f}, Steps: {steps}, "
-                f"Dir: {'CW' if direction else 'CCW'}"
-            )
-            rotate_steps(steps, direction, step_delay)
-        else:
-            print("Within deadband or too small; no movement.")
-
-        cv.putText(
-            frame,
-            f"Error: {angle_error_deg:.1f} deg",
-            (10, 30),
-            cv.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-        )
-
-    cv.imshow("Frame", frame)
-    cv.imshow("Mask Ball", mask_ball)
-    cv.imshow("Mask Tip", mask_tip)
-    cv.imshow("Mask Center", mask_center)
-
-    if cv.waitKey(1) & 0xFF == ord("q"):
-        break
-
-    sleep(0.01)
-
-cap.release()
-ENA.on()
-cv.destroyAllWindows()
+if __name__ == "__main__":
+    try:
+        controller = PIDController()
+        controller.run()
+    except FileNotFoundError:
+        print("[ERROR] config.json not found. Run simple_autocal.py first.")
+    except Exception as e:
+        print(f"[ERROR] {e}")
