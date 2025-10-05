@@ -106,26 +106,21 @@ def fmt_xyz(t: np.ndarray):
     return x, y, z
 
 
-def detect_apriltag_poses(
-    frame,
-    detector,
-    intrinsics,
-    tag_size_m=0.045
-):
+def detect_apriltag_poses(frame, detector, intrinsics, tag_size_m=0.045):
     """Detect AprilTags in a frame and return their pose data.
-    
+
     Args:
         frame: BGR image from camera
         detector: pupil_apriltags Detector instance
         intrinsics: (fx, fy, cx, cy) camera parameters
         tag_size_m: black-square edge length of the tag (meters)
-        
+
     Returns:
         List of dictionaries, each containing:
         {
             'tag_id': int,
             'x': float,         # meters
-            'y': float,         # meters  
+            'y': float,         # meters
             'z': float,         # meters
             'distance': float,  # meters
             'yaw': float,       # degrees
@@ -139,7 +134,7 @@ def detect_apriltag_poses(
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     fx, fy, cx, cy = intrinsics
-    
+
     # Detect + estimate pose
     detections = detector.detect(
         gray,
@@ -147,7 +142,7 @@ def detect_apriltag_poses(
         camera_params=(fx, fy, cx, cy),
         tag_size=tag_size_m,
     )
-    
+
     pose_data = []
     for d in detections:
         # Pose in camera frame
@@ -156,23 +151,23 @@ def detect_apriltag_poses(
         x, y, z = fmt_xyz(t)
         dist_m = float(np.linalg.norm(t))
         yaw, pitch, roll = np.degrees(rmat_to_euler_zyx(R))
-        
+
         pose_info = {
-            'tag_id': d.tag_id,
-            'x': x,
-            'y': y, 
-            'z': z,
-            'distance': dist_m,
-            'yaw': yaw,
-            'pitch': pitch,
-            'roll': roll,
-            'pose_R': R,
-            'pose_t': t,
-            'center': tuple(map(int, d.center)),
-            'corners': d.corners
+            "tag_id": d.tag_id,
+            "x": x,
+            "y": y,
+            "z": z,
+            "distance": dist_m,
+            "yaw": yaw,
+            "pitch": pitch,
+            "roll": roll,
+            "pose_R": R,
+            "pose_t": t,
+            "center": tuple(map(int, d.center)),
+            "corners": d.corners,
         }
         pose_data.append(pose_info)
-        
+
     return pose_data
 
 
@@ -220,25 +215,28 @@ def run_pose_demo(
                 break
 
             pose_data = detect_apriltag_poses(frame, det, intr, tag_size_m)
-            
-            for pose_info in pose_data:
 
-                tag_id = pose_info['tag_id']
-                x, y, z = pose_info['x'], pose_info['y'], pose_info['z']
-                dist_m = pose_info['distance']
-                yaw, pitch, roll = pose_info['yaw'], pose_info['pitch'], pose_info['roll']
-                R, t = pose_info['pose_R'], pose_info['pose_t']
-                center = pose_info['center']
-                corners = pose_info['corners']
-                
+            for pose_info in pose_data:
+                tag_id = pose_info["tag_id"]
+                x, y, z = pose_info["x"], pose_info["y"], pose_info["z"]
+                dist_m = pose_info["distance"]
+                yaw, pitch, roll = (
+                    pose_info["yaw"],
+                    pose_info["pitch"],
+                    pose_info["roll"],
+                )
+                R, t = pose_info["pose_R"], pose_info["pose_t"]
+                center = pose_info["center"]
+                corners = pose_info["corners"]
+
                 class DetectionForDrawing:
                     def __init__(self, tag_id, center, corners):
                         self.tag_id = tag_id
                         self.center = center
                         self.corners = corners
-                
+
                 d_draw = DetectionForDrawing(tag_id, center, corners)
-                
+
                 draw_tag_outline(frame, d_draw)
                 cv2.putText(
                     frame,
@@ -279,7 +277,7 @@ def run_pose_demo(
 
             cv2.imshow("AprilTag Pose (x,y,z in meters)", frame)
             key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):  
+            if key in (ord("q"), 27):
                 break
 
     finally:
