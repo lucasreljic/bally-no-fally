@@ -8,20 +8,29 @@ This module:
   until the error is within a deadband.
 """
 
-import cv2 
-import numpy as np
-import serial
+import queue
 import time
 from threading import Thread
-import queue
-from ball_detection import detect_ball_x  
+
+import cv2
+import numpy as np
+import serial
+from ball_detection import detect_ball_x
 
 
 class PIDController:
     """PID controller for beam balancing using servo control."""
-    def __init__(self, servo_port="/dev/ttyUSB0", neutral_angle=15,
-                 kp=10.0, ki=0.0, kd=0.0, scale_factor=0.25):
-        """ Initialize controller, load config, set defaults and queues. """
+
+    def __init__(
+        self,
+        servo_port="/dev/ttyUSB0",
+        neutral_angle=15,
+        kp=10.0,
+        ki=0.0,
+        kd=0.0,
+        scale_factor=0.25,
+    ):
+        """Initialize controller, load config, set defaults and queues."""
         # Load experiment and hardware config from JSON file (Alternate way)
         # with open(config_file, 'r') as f:
         #     self.config = json.load(f)
@@ -47,9 +56,8 @@ class PIDController:
         self.start_time = None
         # Thread-safe queue for most recent ball position measurement
         self.position_queue = queue.Queue(maxsize=1)
-        self.running = False    # Main run flag for clean shutdown
+        self.running = False  # Main run flag for clean shutdown
 
-    
     def connect_servo(self):
         """Try to open serial connection to servo, return True if success."""
         try:
@@ -77,18 +85,18 @@ class PIDController:
         error = self.setpoint - position  # Compute error
         error = error * 100  # Scale error for easier tuning (if needed)
         # Proportional term
-        P = self.Kp * error
+        P_val = self.Kp * error
         # Integral term accumulation
         self.integral += error * dt
-        I = self.Ki * self.integral
+        I_val = self.Ki * self.integral
         # Derivative term calculation
         derivative = (error - self.prev_error) / dt
-        D = self.Kd * derivative
+        D_val = self.Kd * derivative
         self.prev_error = error
         # PID output (limit to safe beam range)
-        output = P + I + D
+        output = P_val + I_val + D_val
         output = np.clip(output, -15, 15)
-        
+
         return output
 
     def camera_thread(self):
@@ -98,7 +106,7 @@ class PIDController:
         cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-        
+
         while self.running:
             ret, frame = cap.read()
             if not ret:
@@ -114,14 +122,13 @@ class PIDController:
                         self.position_queue.get_nowait()
                     self.position_queue.put_nowait(position_m)
                 except Exception:
-                    pass
+                    print("[CAMERA] Could not add position to queue")
             # Show processed video with overlays (comment out for speed)
-            # Live preview for debugging 
+            # Live preview for debugging
             # cv2.imshow("Ball Tracking", vis_frame)
             # if cv2.waitKey(1) & 0xFF == 27:  # ESC exits
             #     self.running = False
             #     break
-            
         cap.release()
         cv2.destroyAllWindows()
 
@@ -129,7 +136,7 @@ class PIDController:
         """Runs PID control loop in parallel with GUI and camera."""
         if not self.connect_servo():
             print("[ERROR] No servo - running in simulation mode")
-            
+
         self.start_time = time.time()
         while self.running:
             try:
@@ -158,7 +165,7 @@ class PIDController:
 
     # def create_gui(self):
     #     """Build Tkinter GUI with large sliders and labeled controls."""
-        
+
     #     self.root = tk.Tk()
     #     self.root.title("Basic PID Controller")
     #     self.root.geometry("520x400")
@@ -271,7 +278,7 @@ class PIDController:
             self.root.quit()
             self.root.destroy()
         except Exception:
-            pass
+            print("[ERROR] Unable to stop")
 
     def run(self):
         """Entry point: starts threads, launches GUI mainloop."""
@@ -292,6 +299,7 @@ class PIDController:
         # After GUI ends, stop everything
         self.running = False
         print("[INFO] Controller stopped")
+
 
 if __name__ == "__main__":
     try:
