@@ -17,16 +17,14 @@ import queue
 from ball_detection import detect_ball_x  
 
 
-
 class PIDController:
+    """PID controller for beam balancing using servo control."""
     def __init__(self, servo_port="/dev/ttyUSB0", neutral_angle=15,
                  kp=10.0, ki=0.0, kd=0.0, scale_factor=0.25):
         """ Initialize controller, load config, set defaults and queues. """
-        
         # Load experiment and hardware config from JSON file (Alternate way)
         # with open(config_file, 'r') as f:
         #     self.config = json.load(f)
-        
         # PID gains (controlled by sliders in GUI)
         self.Kp = 10.0
         self.Ki = 0.0
@@ -76,7 +74,6 @@ class PIDController:
 
     def update_pid(self, position, dt=0.033):
         """Perform PID calculation and return control output."""
-        
         error = self.setpoint - position  # Compute error
         error = error * 100  # Scale error for easier tuning (if needed)
         # Proportional term
@@ -96,7 +93,6 @@ class PIDController:
 
     def camera_thread(self):
         """Dedicated thread for video capture and ball detection."""
-        
         cap = cv2.VideoCapture(0)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_FPS, 30)
@@ -107,7 +103,6 @@ class PIDController:
             ret, frame = cap.read()
             if not ret:
                 continue
-            
             # Detect ball position in frame
             found, x_normalized, vis_frame = detect_ball_x(frame)
             if found:
