@@ -12,10 +12,12 @@ import queue
 import time
 from threading import Thread
 
-import cv2
+import cv2 as cv
 import numpy as np
 import serial
-from ball_detection import detect_ball_x
+from apriltags_detector import AprilTagDetector
+from ball_detection import BallDetector
+from servo_control import ServoController
 
 
 class PIDController:
@@ -38,6 +40,9 @@ class PIDController:
         self.Kp = 10.0
         self.Ki = 0.0
         self.Kd = 0.0
+
+        # Beam length
+        self.length_beam = 0.16  # meters
         # Scale factor for converting from pixels to meters
         self.scale_factor = scale_factor
         # Servo port name and center angle
@@ -57,6 +62,7 @@ class PIDController:
         # Thread-safe queue for most recent ball position measurement
         self.position_queue = queue.Queue(maxsize=1)
         self.running = False  # Main run flag for clean shutdown
+        self.servo = None
 
     def connect_servo(self):
         """Try to open serial connection to servo, return True if success."""
@@ -69,6 +75,15 @@ class PIDController:
             print(f"[SERVO] Connection Failed: {e}")
             self.servo = None
             return False
+
+    def set_servo_angle(self, pos):
+        """Set servo angle based on normalized position (-1 to 1)."""
+        if not self.servo:
+            return
+        position = np.clip(pos, -1, 1)
+
+        self.servo.set_position_normalized(position)
+        return
 
     def send_servo_angle(self, angle):
         """Send angle command to servo motor (clipped for safety)."""
@@ -83,7 +98,7 @@ class PIDController:
     def update_pid(self, position, dt=0.033):
         """Perform PID calculation and return control output."""
         error = self.setpoint - position  # Compute error
-        error = error * 100  # Scale error for easier tuning (if needed)
+        error = error * 1  # Scale error for easier tuning (if needed)
         # Proportional term
         P_val = self.Kp * error
         # Integral term accumulation
@@ -101,21 +116,37 @@ class PIDController:
 
     def camera_thread(self):
         """Dedicated thread for video capture and ball detection."""
-        cap = cv2.VideoCapture(0)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-
+        cap = cv.VideoCapture(0)
+        cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv.CAP_PROP_FPS, 30)
+        cap.set(cv.CAP_PROP_FRAME_WIDTH, 320)
+        cap.set(cv.CAP_PROP_FRAME_HEIGHT, 240)
+        cap.set(cv.CAP_PROP_FPS, 30)
+        detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.037)
+        ball_detector = BallDetector()
         while self.running:
             ret, frame = cap.read()
             if not ret:
                 continue
             # Detect ball position in frame
-            found, x_normalized, vis_frame = detect_ball_x(frame)
+            alpha = 0.9  # Contrast control (1.0 means no change, >1 increases, <1 decreases)
+            beta = 10  # Brightness control (positive increases, negative decreases)
+
+            # Apply the contrast and brightness adjustment
+            frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
+            # Convert the frame from BGR to HSV color space to easily identify a colour
+            # Get detection results with overlay
+            pose_data = detector.detect_apriltag_poses(frame)
+            tag_position = pose_data[0] if pose_data else None
+
+            vis_frame, found, _, distance_to_tag = ball_detector.draw_detection(
+                frame, apriltag_position=tag_position
+            )
+            # frame_with_overlay = detector.draw_detection_overlay(vis_frame, pose_data)
+
             if found:
                 # Convert normalized to meters using scale
-                position_m = x_normalized * self.scale_factor
+                position_m = self.length_beam / 2 - distance_to_tag
                 # Always keep latest measurement only
                 try:
                     if self.position_queue.full():
@@ -125,18 +156,18 @@ class PIDController:
                     print("[CAMERA] Could not add position to queue")
             # Show processed video with overlays (comment out for speed)
             # Live preview for debugging
-            # cv2.imshow("Ball Tracking", vis_frame)
-            # if cv2.waitKey(1) & 0xFF == 27:  # ESC exits
+            # cv.imshow("Ball Tracking", vis_frame)
+            # if cv.waitKey(1) & 0xFF == 27:  # ESC exits
             #     self.running = False
             #     break
         cap.release()
-        cv2.destroyAllWindows()
+        cv.destroyAllWindows()
 
     def control_thread(self):
         """Runs PID control loop in parallel with GUI and camera."""
-        if not self.connect_servo():
-            print("[ERROR] No servo - running in simulation mode")
-
+        # if not self.connect_servo():
+        #     print("[ERROR] No servo - running in simulation mode")
+        self.servo = ServoController()
         self.start_time = time.time()
         while self.running:
             try:
@@ -159,9 +190,11 @@ class PIDController:
                 print(f"[CONTROL] Error: {e}")
                 break
         if self.servo:
+            self.servo.set_position_normalized(0)
+            self.servo.cleanup()
             # Return to neutral on exit
-            self.send_servo_angle(0)
-            self.servo.close()
+            # self.send_servo_angle(0)
+            # self.servo.close()
 
     # def create_gui(self):
     #     """Build Tkinter GUI with large sliders and labeled controls."""
@@ -275,6 +308,7 @@ class PIDController:
         self.running = False
         # Try to safely close all windows/resources
         try:
+            self.servo.cleanup()
             self.root.quit()
             self.root.destroy()
         except Exception:
