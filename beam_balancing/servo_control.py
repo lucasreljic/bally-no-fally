@@ -145,7 +145,7 @@ class ServoController:
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
         self.min_angle = 0  # Minimum servo angle in degrees
-        self.max_angle = 10  # Maximum servo angle in degrees
+        self.max_angle = 3  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
         # Servo PWM parameters
