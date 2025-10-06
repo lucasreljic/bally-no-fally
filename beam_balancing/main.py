@@ -5,7 +5,8 @@ computer vision techniques with OpenCV.
 """
 
 import cv2 as cv
-import numpy as np
+from apriltags_detector import AprilTagDetector
+from ball_detection import BallDetector
 
 # '***' stands for things to modify for your own webcam, display, and ball if needed
 
@@ -23,6 +24,8 @@ def detect_yellow_ball():
     cap = cv.VideoCapture(0)
     # *1 CAP_PROP_FPS sets the frame rate of the webcam to 30 fps here
     cap.set(cv.CAP_PROP_FPS, 30)
+    detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.037)
+    ball_detector = BallDetector()
 
     while True:
         # Read a frame from the webcam
@@ -31,49 +34,32 @@ def detect_yellow_ball():
             print("Failed to grab frame")
             break
 
-        # *2 Set the image resolution to 480x480. Note increasing resolution increases processing power used, and may slow down video feed.
-        frame = cv.resize(frame, (480, 480))
+        alpha = (
+            0.9  # Contrast control (1.0 means no change, >1 increases, <1 decreases)
+        )
+        beta = 10  # Brightness control (positive increases, negative decreases)
 
+        # Apply the contrast and brightness adjustment
+        frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
         # Convert the frame from BGR to HSV color space to easily identify a colour
-        hsv = cv.cvtColor(frame, cv.COLOR_BGR2HSV)
+        # Get detection results with overlay
+        pose_data = detector.detect_apriltag_poses(frame)
+        tag_position = pose_data[0] if pose_data else None
 
-        # *3 Define the range of yellow color in HSV [Hue, Saturation, Value]
-        # SET THESE VALUES VIA THE METHOD EXPLAINED IN THE TUTORIAL
-        ball_color_lower = np.array(
-            [20, 100, 100]
-        )  # [lower Hue, lower Saturation, lower Value]
-        ball_color_upper = np.array(
-            [30, 255, 255]
-        )  # [upper Hue, upper Saturation, upper Value]
-
-        # Threshold the HSV image to get the colors defined above
-        # Pixels in the range are set to white (255) and those that aren't are set to black (0), creating a binary mask
-        mask = cv.inRange(hsv, ball_color_lower, ball_color_upper)
-
-        # Find contours in the mask
-        # RETR_TREE retrieves all hierarchical contours and organizes them
-        # CHAIN_APPROX_SIMPLE compresses horizontal, vertical, and diagonal segments, leaving only their end points
-        contours, _ = cv.findContours(mask, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
-
-        # Find the index of the largest contour
-        if contours:
-            # Determines the larget contour size using the cv.contour Area function
-            largest_contour = max(contours, key=cv.contourArea)
-            # Computes the minimum enclosing circle aroudn the largest contour
-            ((x, y), radius) = cv.minEnclosingCircle(largest_contour)
-            # * 4 Only consider large enough objects. If it only detects a small portion of your ball, you can test higher radius values to capture more of the ball
-            if radius > 10:
-                # Draw a yellow circle around the ball
-                cv.circle(frame, (int(x), int(y)), int(radius), (0, 255, 255), 2)
-                # Draw a red dot in the center of the ball
-                cv.circle(
-                    frame, (int(x), int(y)), 2, (0, 0, 255), -1
-                )  # (image to draw dot on, x,y pixel coordinates, radius in pixels, RGB values in this case red, -1 indicates to fill the circle)
-                # Display the position of the ball
-                print(f"Yellow ball detected at position: ({int(x)}, {int(y)})")
-
-        # Display the resulting frame
-        cv.imshow("frame", frame)
+        vis_frame, found, position_m, distance_to_tag = ball_detector.draw_detection(
+            frame, apriltag_position=tag_position
+        )
+        frame_with_overlay = detector.draw_detection_overlay(vis_frame, pose_data)
+        if not found or distance_to_tag is None:
+            print("Ball not found")
+        # for pose in pose_data:
+        #     print(f"Tag {pose['tag_id']}: x={pose['x']:.3f}m, y={pose['y']:.3f}m, z={pose['z']:.3f}m")
+        # Display the resulting frame with resize
+        scale_percent = 50
+        width = int(frame_with_overlay.shape[1] * scale_percent / 100)
+        height = int(frame_with_overlay.shape[0] * scale_percent / 100)
+        frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
+        cv.imshow("frame", frame_with_overlay)
 
         # Break the loop when 'q' is pressed
         if cv.waitKey(1) & 0xFF == ord("q"):
