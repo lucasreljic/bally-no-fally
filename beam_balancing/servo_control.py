@@ -144,8 +144,10 @@ class ServoController:
         """
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
-        self.min_angle = 0  # Minimum servo angle in degrees
-        self.max_angle = 3  # Maximum servo angle in degrees
+        self.safety_min_angle = -6  # For the Beam balancer this is the max travel angle
+        self.safety_max_angle = 6
+        self.min_angle = -46  # Minimum servo angle in degrees
+        self.max_angle = 44  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
         # Servo PWM parameters
@@ -179,7 +181,7 @@ class ServoController:
                     )
 
                 print(
-                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}° to {self.max_angle}°"
+                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}Â° to {self.max_angle}Â°"
                 )
 
             except Exception as e:
@@ -256,7 +258,7 @@ class ServoController:
         """
         # Clamp angle to valid range
         angle = max(self.min_angle, min(self.max_angle, angle))
-
+        angle = max(self.safety_min_angle, min(self.safety_max_angle, angle))
         # Map angle to servo value (-1 to +1)
         angle_range = self.max_angle - self.min_angle
         normalized = (angle - self.min_angle) / angle_range  # 0 to 1
@@ -284,12 +286,12 @@ class ServoController:
                     self.servo.value = servo_value
 
                 self.current_angle = angle
-                print(f"[SERVO] Set angle: {angle:.1f}°")
+                print(f"[SERVO] Set angle: {angle:.1f}Â°")
 
             except Exception as e:
                 print(f"[SERVO] Error setting angle: {e}")
         else:
-            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}°")
+            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}Â°")
             self.current_angle = angle
 
     def set_position_normalized(self, position):
@@ -302,7 +304,7 @@ class ServoController:
         # Map normalized position to servo angle
         # When ball is right (+1.0), tilt beam left (negative angle) to roll ball back
         # When ball is left (-1.0), tilt beam right (positive angle) to roll ball back
-        target_angle = -position * self.max_angle
+        target_angle = -position * self.safety_max_angle
 
         self.set_angle(target_angle)
 

@@ -26,10 +26,10 @@ class PIDController:
     def __init__(
         self,
         servo_port="/dev/ttyUSB0",
-        neutral_angle=15,
-        kp=10.0,
+        neutral_angle=11.4,
+        kp=0.05,
         ki=0.0,
-        kd=0.0,
+        kd=0.005,
         scale_factor=0.25,
     ):
         """Initialize controller, load config, set defaults and queues."""
@@ -37,12 +37,12 @@ class PIDController:
         # with open(config_file, 'r') as f:
         #     self.config = json.load(f)
         # PID gains (controlled by sliders in GUI)
-        self.Kp = 10.0
-        self.Ki = 0.0
-        self.Kd = 0.0
+        self.Kp = kp
+        self.Ki = ki
+        self.Kd = kd
 
         # Beam length
-        self.length_beam = 0.16  # meters
+        self.length_beam = 0.114  # meters
         # Scale factor for converting from pixels to meters
         self.scale_factor = scale_factor
         # Servo port name and center angle
@@ -76,7 +76,7 @@ class PIDController:
             self.servo = None
             return False
 
-    def set_servo_angle(self, pos):
+    def set_servo_pos(self, pos):
         """Set servo angle based on normalized position (-1 to 1)."""
         if not self.servo:
             return
@@ -98,7 +98,7 @@ class PIDController:
     def update_pid(self, position, dt=0.033):
         """Perform PID calculation and return control output."""
         error = self.setpoint - position  # Compute error
-        error = error * 1  # Scale error for easier tuning (if needed)
+        error = error * 100  # Scale error for easier tuning (if needed)
         # Proportional term
         P_val = self.Kp * error
         # Integral term accumulation
@@ -116,21 +116,19 @@ class PIDController:
 
     def camera_thread(self):
         """Dedicated thread for video capture and ball detection."""
+        print("start camera thread")
         cap = cv.VideoCapture(0)
         cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv.CAP_PROP_FPS, 30)
-        cap.set(cv.CAP_PROP_FRAME_WIDTH, 320)
-        cap.set(cv.CAP_PROP_FRAME_HEIGHT, 240)
-        cap.set(cv.CAP_PROP_FPS, 30)
-        detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.037)
+        detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.014)
         ball_detector = BallDetector()
         while self.running:
             ret, frame = cap.read()
             if not ret:
                 continue
             # Detect ball position in frame
-            alpha = 0.9  # Contrast control (1.0 means no change, >1 increases, <1 decreases)
-            beta = 10  # Brightness control (positive increases, negative decreases)
+            alpha = 1.1  # Contrast control (1.0 means no change, >1 increases, <1 decreases)
+            beta = -15  # Brightness control (positive increases, negative decreases)
 
             # Apply the contrast and brightness adjustment
             frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
@@ -142,11 +140,11 @@ class PIDController:
             vis_frame, found, _, distance_to_tag = ball_detector.draw_detection(
                 frame, apriltag_position=tag_position
             )
-            # frame_with_overlay = detector.draw_detection_overlay(vis_frame, pose_data)
+            frame_with_overlay = detector.draw_detection_overlay(vis_frame, pose_data)
 
-            if found:
+            if found and distance_to_tag:
                 # Convert normalized to meters using scale
-                position_m = self.length_beam / 2 - distance_to_tag
+                position_m = (distance_to_tag - 0.045) - self.length_beam / 2
                 # Always keep latest measurement only
                 try:
                     if self.position_queue.full():
@@ -156,10 +154,15 @@ class PIDController:
                     print("[CAMERA] Could not add position to queue")
             # Show processed video with overlays (comment out for speed)
             # Live preview for debugging
-            # cv.imshow("Ball Tracking", vis_frame)
-            # if cv.waitKey(1) & 0xFF == 27:  # ESC exits
-            #     self.running = False
-            #     break
+            scale_percent = 50
+            width = int(frame_with_overlay.shape[1] * scale_percent / 100)
+            height = int(frame_with_overlay.shape[0] * scale_percent / 100)
+            frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
+            cv.imshow("frame", frame_with_overlay)
+
+            if cv.waitKey(1) & 0xFF == 27:  # ESC exits
+                self.running = False
+                break
         cap.release()
         cv.destroyAllWindows()
 
@@ -172,18 +175,18 @@ class PIDController:
         while self.running:
             try:
                 # Wait for latest ball position from camera
-                position = self.position_queue.get(timeout=0.1)
+                position = self.position_queue.get(timeout=0.03)
                 # Compute control output using PID
                 control_output = self.update_pid(position)
                 # Send control command to servo (real or simulated)
-                self.send_servo_angle(control_output)
+                self.set_servo_pos(control_output)
                 # Log results for plotting
                 current_time = time.time() - self.start_time
                 self.time_log.append(current_time)
                 self.position_log.append(position)
                 self.setpoint_log.append(self.setpoint)
                 self.control_log.append(control_output)
-                print(f"Pos: {position:.3f}m, Output: {control_output:.1f}°")
+                print(f"Pos: {position:.3f}m, Output: {control_output}")
             except queue.Empty:
                 continue
             except Exception as e:
@@ -328,9 +331,14 @@ class PIDController:
 
         # Build and run GUI in main thread
         # self.create_gui()
-        self.root.mainloop()
-
+        # self.root.mainloop()
+        while True:
+            time.sleep(1)
+            if 0xFF == ord("q"):
+                break
         # After GUI ends, stop everything
+        cam_thread.join()
+        ctrl_thread.join()
         self.running = False
         print("[INFO] Controller stopped")
 
