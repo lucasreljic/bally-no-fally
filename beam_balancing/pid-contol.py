@@ -29,7 +29,7 @@ class PIDController:
         neutral_angle=11.4,
         kp=0.08,
         ki=0.04,
-        kd=0.02,
+        kd=0.015,
         scale_factor=0.25,
     ):
         """Initialize controller, load config, set defaults and queues."""
@@ -41,8 +41,11 @@ class PIDController:
         self.Ki = ki
         self.Kd = kd
 
+        self.scale_error = 100
         # Beam length
         self.length_beam = 0.114  # meters
+        self.deadband = 0.005  # meters
+        self.I_range = 0.06 * self.scale_error  # meters
         # Scale factor for converting from pixels to meters
         self.scale_factor = scale_factor
         # Servo port name and center angle
@@ -98,11 +101,17 @@ class PIDController:
     def update_pid(self, position, dt=0.033):
         """Perform PID calculation and return control output."""
         error = self.setpoint - position  # Compute error
-        error = error * 100  # Scale error for easier tuning (if needed)
+        if abs(error) < self.deadband:
+            error = 0
+        error = error * self.scale_error  # Scale error for easier tuning (if needed)
+
         # Proportional term
         P_val = self.Kp * error
         # Integral term accumulation
-        self.integral += error * dt
+        if self.I_range < abs(error):
+            self.integral = 0
+        else:
+            self.integral += error * dt
         I_val = self.Ki * self.integral
         # Derivative term calculation
         derivative = (error - self.prev_error) / dt
@@ -144,7 +153,7 @@ class PIDController:
 
             if found and distance_to_tag:
                 # Convert normalized to meters using scale
-                position_m = (distance_to_tag - 0.045) - self.length_beam / 2
+                position_m = (distance_to_tag - 0.038) - self.length_beam / 2
                 # Always keep latest measurement only
                 try:
                     if self.position_queue.full():
