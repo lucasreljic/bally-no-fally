@@ -2,27 +2,27 @@
 
 PWM-based servo motor control for tilting the beam based on ball position.
 Supports both direct angle control and position-based control with configurable limits.
-Uses hardware PWM when available to eliminate jitter on RPi5.
+Uses PCA9685 hardware PWM controller to eliminate jitter.
 """
 
 import json
 import os
 import time
 
-# Try multiple PWM backends in order of preference for RPi5
+# Try multiple PWM backends in order of preference
 pwm_backend = None
 pin_factory = None
 
-# First try rpi-lgpio (recommended for RPi5)
+# First try PCA9685 hardware PWM controller (best option - no jitter)
 try:
-    import lgpio
+    import smbus
 
-    pwm_backend = "lgpio"
-    print("[SERVO] Using lgpio for hardware PWM (RPi5 compatible)")
+    pwm_backend = "pca9685"
+    print("[SERVO] Using PCA9685 hardware PWM controller (no jitter)")
 except ImportError:
     pass
 
-# Fallback to gpiozero with rpi-lgpio pin factory (RPi5 compatible)
+# Fallback to gpiozero options if PCA9685 not available
 if pwm_backend is None:
     try:
         from gpiozero import Servo
@@ -34,77 +34,102 @@ if pwm_backend is None:
     except ImportError:
         pass
 
-# Try gpiozero with pigpio (older Pi models)
-if pwm_backend is None:
-    try:
-        from gpiozero import Servo
-        from gpiozero.pins.pigpio import PiGPIOFactory
 
-        try:
-            pin_factory = PiGPIOFactory()
-            pwm_backend = "pigpio"
-            print("[SERVO] Using pigpio pin factory for precise PWM")
-        except Exception as e:
-            pwm_backend = "gpiozero"
-            print(f"[SERVO] Using gpiozero software PWM (may have jitter): {e}")
-    except ImportError:
-        print("[SERVO] Warning: No PWM library available, using mock mode")
+class PCA9685:
+    """PCA9685 16-channel PWM controller driver."""
 
-
-class HardwarePWMServo:
-    """Hardware PWM servo controller using lgpio."""
-
-    def __init__(self, pin, min_pulse_width=1.0, max_pulse_width=2.0, frequency=50):
-        """Initialize hardware PWM servo.
+    def __init__(self, address=0x40, busnum=1):
+        """Initialize PCA9685 PWM controller.
 
         Args:
-            pin (int): GPIO pin number for servo control
-            min_pulse_width (float): Minimum pulse width in milliseconds (default 1.0ms)
-            max_pulse_width (float): Maximum pulse width in milliseconds (default 2.0ms)
-            frequency (int): PWM frequency in Hz (default 50Hz)
+            address (int): I2C address of PCA9685 (default 0x40)
+            busnum (int): I2C bus number (default 1)
         """
-        self.pin = pin
-        self.min_pulse_width = min_pulse_width  # ms
-        self.max_pulse_width = max_pulse_width  # ms
-        self.frequency = frequency  # Hz
-        self.current_duty_cycle = 0
-        self.chip = None
-        self.pwm_id = None
+        self.bus = smbus.SMBus(busnum)
+        self.address = address
+        self._setup()
 
-        if pwm_backend == "lgpio":
-            self._init_lgpio()
-        else:
-            raise RuntimeError("No hardware PWM backend available")
+    def _setup(self):
+        """Set up PCA9685 with default configuration."""
+        self.write(0x00, 0x00)  # Mode1 register - normal mode
+        self.set_pwm_freq(50)  # Set frequency to 50 Hz for servos
 
-    def _init_lgpio(self):
-        """Initialize using lgpio library with proper PWM support."""
-        self.chip = lgpio.gpiochip_open(0)
+    def write(self, reg, value):
+        """Write byte to PCA9685 register."""
+        self.bus.write_byte_data(self.address, reg, value)
 
-        # Set pin as output
-        lgpio.gpio_claim_output(self.chip, self.pin)
+    def read(self, reg):
+        """Read byte from PCA9685 register."""
+        return self.bus.read_byte_data(self.address, reg)
 
-        # Start PWM on the pin
-        # lgpio.tx_pwm(chip, gpio, frequency, duty_cycle)
-        # Start with 0% duty cycle (servo off position)
-        lgpio.tx_pwm(self.chip, self.pin, self.frequency, 0)
-        print(f"[SERVO] lgpio PWM initialized on pin {self.pin}")
+    def set_pwm_freq(self, freq_hz):
+        """Set PWM frequency for all channels.
 
-    def set_pulse_width(self, pulse_width_ms):
-        """Set servo position by pulse width in milliseconds."""
-        # Convert pulse width to duty cycle percentage
-        period_ms = 1000.0 / self.frequency  # Period in ms (20ms for 50Hz)
-        duty_cycle = (pulse_width_ms / period_ms) * 100.0
+        Args:
+            freq_hz (float): Frequency in Hz (typical servo frequency is 50Hz)
+        """
+        prescale_val = int(25000000.0 / (4096 * freq_hz) - 1)
+        old_mode = self.read(0x00)
+        new_mode = (old_mode & 0x7F) | 0x10  # Sleep mode
+        self.write(0x00, new_mode)  # Go to sleep
+        self.write(0xFE, prescale_val)  # Set prescaler
+        self.write(0x00, old_mode)  # Restore mode
+        time.sleep(0.005)
+        self.write(0x00, old_mode | 0x80)  # Wake up with auto-increment
 
-        # Clamp duty cycle to reasonable range (0.5% to 12.5% for typical servos)
-        duty_cycle = max(0.5, min(12.5, duty_cycle))
+    def set_pwm(self, channel, on, off):
+        """Set PWM for specific channel.
 
-        if self.chip is not None:
-            lgpio.tx_pwm(self.chip, self.pin, self.frequency, duty_cycle)
+        Args:
+            channel (int): PWM channel (0-15)
+            on (int): ON time (0-4095)
+            off (int): OFF time (0-4095)
+        """
+        self.write(0x06 + 4 * channel, on & 0xFF)
+        self.write(0x07 + 4 * channel, on >> 8)
+        self.write(0x08 + 4 * channel, off & 0xFF)
+        self.write(0x09 + 4 * channel, off >> 8)
 
-        self.current_duty_cycle = duty_cycle
+    def set_pulse_width(self, channel, pulse_width_ms, frequency=50):
+        """Set servo pulse width in milliseconds.
+
+        Args:
+            channel (int): PWM channel (0-15)
+            pulse_width_ms (float): Pulse width in milliseconds
+            frequency (float): PWM frequency in Hz
+        """
+        pulse_length = (
+            1000000.0 / frequency / 4096
+        )  # Length of one pulse in microseconds
+        pulse = int(pulse_width_ms * 1000 / pulse_length)  # Convert to PWM value
+        self.set_pwm(channel, 0, pulse)
+
+
+class PCA9685Servo:
+    """Servo controller using PCA9685 PWM driver."""
+
+    def __init__(self, pca9685, channel, min_pulse_width=1.0, max_pulse_width=2.0):
+        """Initialize servo on PCA9685 channel.
+
+        Args:
+            pca9685 (PCA9685): PCA9685 instance
+            channel (int): PWM channel (0-15)
+            min_pulse_width (float): Minimum pulse width in ms
+            max_pulse_width (float): Maximum pulse width in ms
+        """
+        self.pca9685 = pca9685
+        self.channel = channel
+        self.min_pulse_width = min_pulse_width
+        self.max_pulse_width = max_pulse_width
 
     def set_angle(self, angle, min_angle=-90, max_angle=90):
-        """Set servo angle (-90 to +90 degrees typically)."""
+        """Set servo to specific angle.
+
+        Args:
+            angle (float): Target angle in degrees
+            min_angle (float): Minimum angle range
+            max_angle (float): Maximum angle range
+        """
         # Clamp angle to range
         angle = max(min_angle, min(max_angle, angle))
 
@@ -115,22 +140,38 @@ class HardwarePWMServo:
         normalized = (angle - min_angle) / angle_range  # 0 to 1
         pulse_width = self.min_pulse_width + (normalized * pulse_range)
 
-        self.set_pulse_width(pulse_width)
+        # Set PWM pulse width
+        self.pca9685.set_pulse_width(self.channel, pulse_width)
 
-    def cleanup(self):
-        """Clean up PWM resources."""
-        if self.chip is not None:
-            try:
-                # Stop PWM
-                lgpio.tx_pwm(self.chip, self.pin, self.frequency, 0)
-                # Free the pin
-                lgpio.gpio_free(self.chip, self.pin)
-                # Close the chip
-                lgpio.gpiochip_close(self.chip)
-                self.chip = None
-                print("[SERVO] lgpio PWM cleaned up")
-            except Exception as e:
-                print(f"[SERVO] lgpio cleanup error: {e}")
+    def set_pulse_width(self, pulse_width_ms):
+        """Set servo position by pulse width."""
+        self.pca9685.set_pulse_width(self.channel, pulse_width_ms)
+
+    def smooth_move(
+        self, start_angle, end_angle, step=0.1, delay=0.05, min_angle=-90, max_angle=90
+    ):
+        """Smoothly move servo from start to end angle.
+
+        Args:
+            start_angle (float): Starting angle
+            end_angle (float): Ending angle
+            step (float): Step size in degrees
+            delay (float): Delay between steps in seconds
+            min_angle (float): Minimum angle range
+            max_angle (float): Maximum angle range
+        """
+        if start_angle < end_angle:
+            angle = start_angle
+            while angle <= end_angle:
+                self.set_angle(angle, min_angle, max_angle)
+                angle += step
+                time.sleep(delay)
+        else:
+            angle = start_angle
+            while angle >= end_angle:
+                self.set_angle(angle, min_angle, max_angle)
+                angle -= step
+                time.sleep(delay)
 
 
 class ServoController:
@@ -144,14 +185,21 @@ class ServoController:
         """
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
-        self.min_angle = 0  # Minimum servo angle in degrees
-        self.max_angle = 3  # Maximum servo angle in degrees
+        self.safety_min_angle = -7  # For the Beam balancer this is the max travel angle
+        self.safety_max_angle = 7
+        self.min_angle = -50  # Minimum servo angle in degrees
+        self.max_angle = 40  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
         # Servo PWM parameters
         self.min_pulse_width = 1.0  # 1ms in milliseconds
         self.max_pulse_width = 2.0  # 2ms in milliseconds
         self.pwm_frequency = 50  # 50Hz standard for servos
+
+        # PCA9685 specific configuration
+        self.pca9685_address = 0x40  # I2C address
+        self.pca9685_channel = 0  # PWM channel on PCA9685
+        self.pca9685_busnum = 1  # I2C bus number
 
         self.servo = None
         self.servo_initialized = False
@@ -178,6 +226,19 @@ class ServoController:
                         "frequency", self.pwm_frequency
                     )
 
+                    # PCA9685 specific config
+                    if "pca9685" in servo_config:
+                        pca_config = servo_config["pca9685"]
+                        self.pca9685_address = pca_config.get(
+                            "address", self.pca9685_address
+                        )
+                        self.pca9685_channel = pca_config.get(
+                            "channel", self.pca9685_channel
+                        )
+                        self.pca9685_busnum = pca_config.get(
+                            "busnum", self.pca9685_busnum
+                        )
+
                 print(
                     f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}° to {self.max_angle}°"
                 )
@@ -192,32 +253,35 @@ class ServoController:
 
     def _initialize_servo(self):
         """Initialize servo using best available PWM method."""
-        # Try hardware PWM first (lgpio for RPi5)
-        if pwm_backend == "lgpio":
+        # Try PCA9685 hardware PWM first (best option)
+        if pwm_backend == "pca9685":
             try:
-                self.servo = HardwarePWMServo(
-                    self.servo_pin,
+                self.pca9685 = PCA9685(self.pca9685_address, self.pca9685_busnum)
+                self.pca9685.set_pwm_freq(self.pwm_frequency)
+
+                self.servo = PCA9685Servo(
+                    self.pca9685,
+                    self.pca9685_channel,
                     self.min_pulse_width,
                     self.max_pulse_width,
-                    self.pwm_frequency,
                 )
+
                 self.set_angle(0)
                 self.servo_initialized = True
                 print(
-                    f"[SERVO] Hardware PWM servo initialized on pin {self.servo_pin} using lgpio"
+                    f"[SERVO] PCA9685 servo initialized on channel {self.pca9685_channel} (address 0x{self.pca9685_address:02x})"
                 )
                 return
             except Exception as e:
-                print(f"[SERVO] lgpio PWM initialization failed: {e}")
+                print(f"[SERVO] PCA9685 initialization failed: {e}")
 
-        # Fallback to gpiozero with appropriate pin factory
+        # Fallback to gpiozero methods
         if pwm_backend in ["gpiozero-lgpio", "pigpio", "gpiozero"]:
             try:
                 if pin_factory:
                     self.servo = Servo(
                         self.servo_pin,
-                        min_pulse_width=self.min_pulse_width
-                        / 1000.0,  # Convert to seconds
+                        min_pulse_width=self.min_pulse_width / 1000.0,
                         max_pulse_width=self.max_pulse_width / 1000.0,
                         pin_factory=pin_factory,
                     )
@@ -256,7 +320,7 @@ class ServoController:
         """
         # Clamp angle to valid range
         angle = max(self.min_angle, min(self.max_angle, angle))
-
+        angle = max(self.safety_min_angle, min(self.safety_max_angle, angle))
         # Map angle to servo value (-1 to +1)
         angle_range = self.max_angle - self.min_angle
         normalized = (angle - self.min_angle) / angle_range  # 0 to 1
@@ -268,15 +332,17 @@ class ServoController:
         """Set servo to specific angle.
 
         Args:
-            angle (float): Target angle in degrees (-45 to +45 typically)
+            angle (float): Target angle in degrees
         """
         # Clamp angle to configured range
         angle = max(self.min_angle, min(self.max_angle, angle))
+        # Apply safety limits
+        angle = max(self.safety_min_angle, min(self.safety_max_angle, angle))
 
         if self.servo and self.servo_initialized:
             try:
-                if isinstance(self.servo, HardwarePWMServo):
-                    # Use hardware PWM servo
+                if isinstance(self.servo, PCA9685Servo):
+                    # Use PCA9685 servo
                     self.servo.set_angle(angle, self.min_angle, self.max_angle)
                 else:
                     # Use gpiozero servo
@@ -302,7 +368,7 @@ class ServoController:
         # Map normalized position to servo angle
         # When ball is right (+1.0), tilt beam left (negative angle) to roll ball back
         # When ball is left (-1.0), tilt beam right (positive angle) to roll ball back
-        target_angle = -position * self.max_angle
+        target_angle = -position * self.safety_max_angle
 
         self.set_angle(target_angle)
 
@@ -322,11 +388,13 @@ class ServoController:
         """Clean up servo resources."""
         if self.servo and self.servo_initialized:
             try:
-                if isinstance(self.servo, HardwarePWMServo):
-                    self.servo.cleanup()
+                if isinstance(self.servo, PCA9685Servo):
+                    # Set servo to neutral position and stop PWM
+                    self.servo.set_angle(0, self.min_angle, self.max_angle)
+                    print("[SERVO] PCA9685 servo cleaned up")
                 else:
                     self.servo.close()
-                print("[SERVO] Servo cleaned up")
+                    print("[SERVO] Servo cleaned up")
             except Exception as e:
                 print(f"[SERVO] Cleanup error: {e}")
 
@@ -352,9 +420,9 @@ def create_servo_controller(config_file="config.json"):
 def main():
     """Test servo control with interactive commands."""
     print("Servo Control Test")
-    print("Commands: angle <degrees>, pos <-1.0 to 1.0>, center, quit")
+    print("Commands: angle <degrees>, pos <-1.0 to 1.0>, center, sweep, quit")
 
-    servo = ServoController()
+    servo_controller = ServoController()
 
     try:
         while True:
@@ -368,23 +436,23 @@ def main():
             elif cmd[0] == "angle" and len(cmd) > 1:
                 try:
                     angle = float(cmd[1])
-                    servo.set_angle(angle)
+                    servo_controller.set_angle(angle)
                 except ValueError:
                     print("Invalid angle value")
             elif cmd[0] == "pos" and len(cmd) > 1:
                 try:
                     position = float(cmd[1])
-                    servo.set_position_normalized(position)
+                    servo_controller.set_position_normalized(position)
                 except ValueError:
                     print("Invalid position value")
             elif cmd[0] == "center":
-                servo.center()
+                servo_controller.center()
             elif cmd[0] == "sweep":
                 print("Sweeping servo...")
                 for angle in range(-30, 31, 5):
-                    servo.set_angle(angle)
+                    servo_controller.set_angle(angle)
                     time.sleep(0.5)
-                servo.center()
+                servo_controller.center()
             else:
                 print(
                     "Unknown command. Use: angle <deg>, pos <-1.0 to 1.0>, center, sweep, quit"
@@ -393,7 +461,7 @@ def main():
     except KeyboardInterrupt:
         print("\nExiting...")
     finally:
-        servo.cleanup()
+        servo_controller.cleanup()
 
 
 if __name__ == "__main__":

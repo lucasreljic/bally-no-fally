@@ -219,13 +219,11 @@ class BallDetector:
         """
         # Calculate true 3D distance using both ball and tag 3D positions
         if "x" in tag_data and "y" in tag_data and "z" in tag_data:
-            ball_x, ball_y, ball_z = ball_position_m
-            tag_x, tag_y, tag_z = tag_data["x"], tag_data["y"], tag_data["z"]
+            ball_x, ball_y, _ = ball_position_m
+            tag_x, tag_y, _ = tag_data["x"], tag_data["y"], tag_data["z"]
 
             # 3D Euclidean distance
-            distance = math.sqrt(
-                (ball_x - tag_x) ** 2 + (ball_y - tag_y) ** 2 + (ball_z - tag_z) ** 2
-            )
+            distance = math.sqrt((ball_x - tag_x) ** 2 + (ball_y - tag_y) ** 2)
             return distance
 
         return None
