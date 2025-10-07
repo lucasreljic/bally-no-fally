@@ -1,7 +1,7 @@
 {
     "ball_detection": {
         "lower_hsv": [5, 150, 150],
-        "upper_hsv": [20, 255, 255],
+        "upper_hsv": [35, 255, 255],
         "min_radius": 5,
         "max_radius": 100,
         "min_area": 300,

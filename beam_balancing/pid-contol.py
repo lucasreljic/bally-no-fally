@@ -27,9 +27,9 @@ class PIDController:
         self,
         servo_port="/dev/ttyUSB0",
         neutral_angle=11.4,
-        kp=0.05,
-        ki=0.0,
-        kd=0.005,
+        kp=0.08,
+        ki=0.04,
+        kd=0.02,
         scale_factor=0.25,
     ):
         """Initialize controller, load config, set defaults and queues."""
@@ -128,7 +128,7 @@ class PIDController:
                 continue
             # Detect ball position in frame
             alpha = 1.1  # Contrast control (1.0 means no change, >1 increases, <1 decreases)
-            beta = -15  # Brightness control (positive increases, negative decreases)
+            beta = -25  # Brightness control (positive increases, negative decreases)
 
             # Apply the contrast and brightness adjustment
             frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
@@ -152,6 +152,10 @@ class PIDController:
                     self.position_queue.put_nowait(position_m)
                 except Exception:
                     print("[CAMERA] Could not add position to queue")
+            elif len(pose_data) < 1:
+                print("[CAMERA] Could not find Apriltag")
+            else:
+                print("[CAMERA] Could not find ball")
             # Show processed video with overlays (comment out for speed)
             # Live preview for debugging
             scale_percent = 50

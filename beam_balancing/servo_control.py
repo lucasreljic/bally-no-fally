@@ -185,10 +185,10 @@ class ServoController:
         """
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
-        self.safety_min_angle = -6  # For the Beam balancer this is the max travel angle
-        self.safety_max_angle = 6
-        self.min_angle = -46  # Minimum servo angle in degrees
-        self.max_angle = 44  # Maximum servo angle in degrees
+        self.safety_min_angle = -7  # For the Beam balancer this is the max travel angle
+        self.safety_max_angle = 7
+        self.min_angle = -50  # Minimum servo angle in degrees
+        self.max_angle = 40  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
         # Servo PWM parameters
