@@ -13,14 +13,25 @@ import time
 pwm_backend = None
 pin_factory = None
 
-# First try rpi-lgpio (recommended for RPi5)
+# First try hardware PWM via sysfs (true hardware PWM for RPi5)
 try:
-    import lgpio
-
-    pwm_backend = "lgpio"
-    print("[SERVO] Using lgpio for hardware PWM (RPi5 compatible)")
+    if os.path.exists("/sys/class/pwm/pwmchip0"):
+        pwm_backend = "hardware"
+        print("[SERVO] Using hardware PWM via sysfs (RPi5 - no jitter)")
+    else:
+        raise ImportError("Hardware PWM not available")
 except ImportError:
     pass
+
+# Fallback to rpi-lgpio
+if pwm_backend is None:
+    try:
+        import lgpio
+
+        pwm_backend = "lgpio"
+        print("[SERVO] Using lgpio for PWM (RPi5 compatible)")
+    except ImportError:
+        pass
 
 # Fallback to gpiozero with rpi-lgpio pin factory (RPi5 compatible)
 if pwm_backend is None:
@@ -52,7 +63,7 @@ if pwm_backend is None:
 
 
 class HardwarePWMServo:
-    """Hardware PWM servo controller using lgpio."""
+    """True hardware PWM servo controller using Linux PWM subsystem."""
 
     def __init__(self, pin, min_pulse_width=1.0, max_pulse_width=2.0, frequency=50):
         """Initialize hardware PWM servo.
@@ -69,39 +80,101 @@ class HardwarePWMServo:
         self.frequency = frequency  # Hz
         self.current_duty_cycle = 0
         self.chip = None
-        self.pwm_id = None
+        self.pwm_channel = None
+        self.period_ns = None
 
-        if pwm_backend == "lgpio":
+        # GPIO pin to PWM channel mapping for RPi5
+        # Only certain pins support hardware PWM
+        self.pwm_channels = {
+            12: (0, 0),  # PWM0 channel 0
+            13: (0, 1),  # PWM0 channel 1
+            18: (0, 0),  # PWM0 channel 0 (alternative)
+            19: (0, 1),  # PWM0 channel 1 (alternative)
+        }
+
+        if pwm_backend == "hardware":
+            self._init_hardware_pwm()
+        elif pwm_backend == "lgpio":
             self._init_lgpio()
         else:
             raise RuntimeError("No hardware PWM backend available")
 
+    def _init_hardware_pwm(self):
+        """Initialize using Linux PWM subsystem for true hardware PWM."""
+        if self.pin not in self.pwm_channels:
+            raise RuntimeError(
+                f"Pin {self.pin} does not support hardware PWM. Use pins: {list(self.pwm_channels.keys())}"
+            )
+
+        pwm_chip, pwm_channel = self.pwm_channels[self.pin]
+        self.pwm_channel = pwm_channel
+
+        pwm_path = f"/sys/class/pwm/pwmchip{pwm_chip}"
+        channel_path = f"{pwm_path}/pwm{pwm_channel}"
+
+        try:
+            # Export the PWM channel if not already exported
+            if not os.path.exists(channel_path):
+                with open(f"{pwm_path}/export", "w") as f:
+                    f.write(str(pwm_channel))
+
+            # Set period (20ms = 20,000,000 ns for 50Hz)
+            self.period_ns = int(1_000_000_000 / self.frequency)
+            with open(f"{channel_path}/period", "w") as f:
+                f.write(str(self.period_ns))
+
+            # Set initial duty cycle to 0
+            with open(f"{channel_path}/duty_cycle", "w") as f:
+                f.write("0")
+
+            # Enable PWM
+            with open(f"{channel_path}/enable", "w") as f:
+                f.write("1")
+
+            self.channel_path = channel_path
+            print(
+                f"[SERVO] Hardware PWM initialized on pin {self.pin} (chip {pwm_chip}, channel {pwm_channel})"
+            )
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize hardware PWM: {e}")
+
     def _init_lgpio(self):
-        """Initialize using lgpio library with proper PWM support."""
+        """Initialize using lgpio library as fallback."""
         self.chip = lgpio.gpiochip_open(0)
-
-        # Set pin as output
         lgpio.gpio_claim_output(self.chip, self.pin)
-
-        # Start PWM on the pin
-        # lgpio.tx_pwm(chip, gpio, frequency, duty_cycle)
-        # Start with 0% duty cycle (servo off position)
         lgpio.tx_pwm(self.chip, self.pin, self.frequency, 0)
         print(f"[SERVO] lgpio PWM initialized on pin {self.pin}")
 
     def set_pulse_width(self, pulse_width_ms):
         """Set servo position by pulse width in milliseconds."""
-        # Convert pulse width to duty cycle percentage
-        period_ms = 1000.0 / self.frequency  # Period in ms (20ms for 50Hz)
-        duty_cycle = (pulse_width_ms / period_ms) * 100.0
+        if pwm_backend == "hardware":
+            # Convert pulse width to duty cycle in nanoseconds
+            duty_cycle_ns = int(pulse_width_ms * 1_000_000)  # ms to ns
 
-        # Clamp duty cycle to reasonable range (0.5% to 12.5% for typical servos)
-        duty_cycle = max(0.5, min(12.5, duty_cycle))
+            # Clamp to reasonable range
+            min_duty_ns = int(0.5 * 1_000_000)  # 0.5ms
+            max_duty_ns = int(2.5 * 1_000_000)  # 2.5ms
+            duty_cycle_ns = max(min_duty_ns, min(max_duty_ns, duty_cycle_ns))
 
-        if self.chip is not None:
-            lgpio.tx_pwm(self.chip, self.pin, self.frequency, duty_cycle)
+            try:
+                with open(f"{self.channel_path}/duty_cycle", "w") as f:
+                    f.write(str(duty_cycle_ns))
+                self.current_duty_cycle = (duty_cycle_ns / self.period_ns) * 100
+            except Exception as e:
+                print(f"[SERVO] Error setting duty cycle: {e}")
 
-        self.current_duty_cycle = duty_cycle
+        elif pwm_backend == "lgpio":
+            # Convert pulse width to duty cycle percentage
+            period_ms = 1000.0 / self.frequency
+            duty_cycle = (pulse_width_ms / period_ms) * 100.0
+            duty_cycle = max(0.5, min(12.5, duty_cycle))
+
+            if self.chip is not None:
+                import lgpio
+
+                lgpio.tx_pwm(self.chip, self.pin, self.frequency, duty_cycle)
+            self.current_duty_cycle = duty_cycle
 
     def set_angle(self, angle, min_angle=-90, max_angle=90):
         """Set servo angle (-90 to +90 degrees typically)."""
@@ -119,13 +192,27 @@ class HardwarePWMServo:
 
     def cleanup(self):
         """Clean up PWM resources."""
-        if self.chip is not None:
+        if pwm_backend == "hardware" and hasattr(self, "channel_path"):
             try:
-                # Stop PWM
+                # Disable PWM
+                with open(f"{self.channel_path}/enable", "w") as f:
+                    f.write("0")
+
+                # Unexport the channel
+                pwm_chip = self.pwm_channels[self.pin][0]
+                with open(f"/sys/class/pwm/pwmchip{pwm_chip}/unexport", "w") as f:
+                    f.write(str(self.pwm_channel))
+
+                print("[SERVO] Hardware PWM cleaned up")
+            except Exception as e:
+                print(f"[SERVO] Hardware PWM cleanup error: {e}")
+
+        elif pwm_backend == "lgpio" and self.chip is not None:
+            try:
+                import lgpio
+
                 lgpio.tx_pwm(self.chip, self.pin, self.frequency, 0)
-                # Free the pin
                 lgpio.gpio_free(self.chip, self.pin)
-                # Close the chip
                 lgpio.gpiochip_close(self.chip)
                 self.chip = None
                 print("[SERVO] lgpio PWM cleaned up")
@@ -194,8 +281,8 @@ class ServoController:
 
     def _initialize_servo(self):
         """Initialize servo using best available PWM method."""
-        # Try hardware PWM first (lgpio for RPi5)
-        if pwm_backend == "lgpio":
+        # Try hardware PWM first (true hardware PWM for RPi5)
+        if pwm_backend in ["hardware", "lgpio"]:
             try:
                 self.servo = HardwarePWMServo(
                     self.servo_pin,
@@ -205,12 +292,13 @@ class ServoController:
                 )
                 self.set_angle(0)
                 self.servo_initialized = True
+                backend_name = "hardware PWM" if pwm_backend == "hardware" else "lgpio"
                 print(
-                    f"[SERVO] Hardware PWM servo initialized on pin {self.servo_pin} using lgpio"
+                    f"[SERVO] {backend_name} servo initialized on pin {self.servo_pin}"
                 )
                 return
             except Exception as e:
-                print(f"[SERVO] lgpio PWM initialization failed: {e}")
+                print(f"[SERVO] Hardware PWM initialization failed: {e}")
 
         # Fallback to gpiozero with appropriate pin factory
         if pwm_backend in ["gpiozero-lgpio", "pigpio", "gpiozero"]:
