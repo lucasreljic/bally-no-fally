@@ -1,0 +1,11 @@
+[Unit]
+Description=To start bally no fally code at startup
+After=usb-gadget.target
+
+[Service]
+ExecStart=/home/lucas/bally-no-fally/.venv/bin/python3 /home/lucas/bally-no-fally/beam_balancing/pid-contol.py --no_vis
+WorkingDirectory=/home/lucas/bally-no-fally/
+StartLimitIntervalSec=10
+
+[Install]
+WantedBy=multi-user.target

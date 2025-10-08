@@ -8,6 +8,7 @@ This module:
   until the error is within a deadband.
 """
 
+import argparse
 import queue
 import time
 from threading import Thread
@@ -25,6 +26,7 @@ class PIDController:
 
     def __init__(
         self,
+        args,
         servo_port="/dev/ttyUSB0",
         neutral_angle=11.4,
         kp=0.08,
@@ -41,6 +43,7 @@ class PIDController:
         self.Ki = ki
         self.Kd = kd
 
+        self.visualization = not args.no_vis
         self.scale_error = 100
         # Beam length
         self.length_beam = 0.114  # meters
@@ -149,7 +152,6 @@ class PIDController:
             vis_frame, found, _, distance_to_tag = ball_detector.draw_detection(
                 frame, apriltag_position=tag_position
             )
-            frame_with_overlay = detector.draw_detection_overlay(vis_frame, pose_data)
 
             if found and distance_to_tag:
                 # Convert normalized to meters using scale
@@ -167,11 +169,15 @@ class PIDController:
                 print("[CAMERA] Could not find ball")
             # Show processed video with overlays (comment out for speed)
             # Live preview for debugging
-            scale_percent = 50
-            width = int(frame_with_overlay.shape[1] * scale_percent / 100)
-            height = int(frame_with_overlay.shape[0] * scale_percent / 100)
-            frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
-            cv.imshow("frame", frame_with_overlay)
+            if self.visualization:
+                frame_with_overlay = detector.draw_detection_overlay(
+                    vis_frame, pose_data
+                )
+                scale_percent = 50
+                width = int(frame_with_overlay.shape[1] * scale_percent / 100)
+                height = int(frame_with_overlay.shape[0] * scale_percent / 100)
+                frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
+                cv.imshow("frame", frame_with_overlay)
 
             if cv.waitKey(1) & 0xFF == 27:  # ESC exits
                 self.running = False
@@ -358,7 +364,11 @@ class PIDController:
 
 if __name__ == "__main__":
     try:
-        controller = PIDController()
+        parser = argparse.ArgumentParser()
+        parser.add_argument(
+            "--no_vis", action="store_true", help="Disable Visualization"
+        )
+        controller = PIDController(parser.parse_args())
         controller.run()
     except FileNotFoundError:
         print("[ERROR] config.json not found. Run simple_autocal.py first.")
