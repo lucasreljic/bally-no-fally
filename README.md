@@ -54,3 +54,31 @@ pre-commit run --files path/to/file.py
 - **Markdown**: markdownlint (Markdown formatting)
 
 Pre-commit hooks will run automatically on every commit to ensure code quality.
+
+## Systemd
+
+The code is intended to start automatically on the Raspberry Pi using systemd and the  `bally-no-fally.service` file
+
+### Setup
+
+First copy over the `bally-no-fally.service` file to `/etc/systemd/system/`
+
+Then run the following commands
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable bally-no-fally.service
+```
+
+**That's it!** Now it will run automatically on boot!
+
+## VNC
+
+In order to see the Raspberry Pi desktop you must ssh using this command
+
+```bash
+sudo ssh -L 5900:localhost:5900 lucas@raspberrypi.local
+```
+
+Then use a vnc client (Only been tested with RealVNC).
+Connect with the address `localhost:5900`, that's all!
