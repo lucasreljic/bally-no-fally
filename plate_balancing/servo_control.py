@@ -185,10 +185,12 @@ class ServoController:
         """
         # Default servo configuration
         self.servo_pin = 18  # GPIO pin for servo control
-        self.safety_min_angle = -7  # For the Beam balancer this is the max travel angle
-        self.safety_max_angle = 7
-        self.min_angle = -50  # Minimum servo angle in degrees
-        self.max_angle = 40  # Maximum servo angle in degrees
+        self.safety_min_angle = (
+            -20
+        )  # For the Beam balancer this is the max travel angle
+        self.safety_max_angle = 25
+        self.min_angle = -45  # Minimum servo angle in degrees
+        self.max_angle = 45  # Maximum servo angle in degrees
         self.current_angle = 0.0  # Current servo position
 
         # Servo PWM parameters
@@ -209,7 +211,7 @@ class ServoController:
             try:
                 with open(config_file, "r") as f:
                     config = json.load(f)
-
+                print("reading config file")
                 # Extract servo configuration
                 if "servo" in config:
                     servo_config = config["servo"]
@@ -242,7 +244,7 @@ class ServoController:
                         self.max_angle = pca_config.get("max_angle", self.max_angle)
 
                 print(
-                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}° to {self.max_angle}°"
+                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}Â° to {self.max_angle}Â°"
                 )
 
             except Exception as e:
@@ -352,12 +354,12 @@ class ServoController:
                     self.servo.value = servo_value
 
                 self.current_angle = angle
-                print(f"[SERVO] Set angle: {angle:.1f}°")
+                print(f"[SERVO] Set angle: {angle:.1f}Â°")
 
             except Exception as e:
                 print(f"[SERVO] Error setting angle: {e}")
         else:
-            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}°")
+            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}Â°")
             self.current_angle = angle
 
     def set_position_normalized(self, position):
@@ -424,7 +426,7 @@ def main():
     print("Servo Control Test")
     print("Commands: angle <degrees>, pos <-1.0 to 1.0>, center, sweep, quit")
 
-    servo_controller = ServoController(config_file="config.json")
+    servo_controller = ServoController(config_file="plate_balancing/servo_2.json")
 
     try:
         while True:
@@ -451,7 +453,7 @@ def main():
                 servo_controller.center()
             elif cmd[0] == "sweep":
                 print("Sweeping servo...")
-                for angle in range(-30, 31, 5):
+                for angle in range(-30, 31, 2):
                     servo_controller.set_angle(angle)
                     time.sleep(0.5)
                 servo_controller.center()
