@@ -14,16 +14,16 @@ def main(freq=0.25, amp=0.8, duration=None, rate=50.0):
     duration: total time to run the test in seconds (None for infinite)
     rate: update rate in Hz
     """
-    servo_0 = ServoController(config_file="servo_0.json")
-    servo_1 = ServoController(config_file="servo_1.json")
-    servo_2 = ServoController(config_file="servo_2.json")
+    servo_0 = ServoController(config_file="plate_balancing/servo_0.json")
+    servo_1 = ServoController(config_file="plate_balancing/servo_1.json")
+    servo_2 = ServoController(config_file="plate_balancing/servo_2.json")
 
     # center everything first
     for s in (servo_0, servo_1, servo_2):
         s.set_position_normalized(0.0)
     time.sleep(0.5)
 
-    phases = [0.0, 2 * math.pi / 3, 4 * math.pi / 3]  # 0°, 120°, 240°
+    phases = [0.0, 2 * math.pi / 3, 4 * math.pi / 3]  # 0Â°, 120Â°, 240Â°
     t0 = time.time()
     dt = 1.0 / max(1.0, rate)
     try:
