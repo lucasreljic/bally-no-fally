@@ -2,8 +2,7 @@
 import math
 
 import numpy as np
-
-# from servo_control import set_angle
+from servo_plate_control import ServoController
 
 
 class InverseKinematics:
@@ -43,6 +42,12 @@ class InverseKinematics:
 
         # Calculate platform connection points
         self.platform_joints = self._calculate_platform_joints()
+
+        # Initialize Servo Controllers
+        self.servos = [
+            ServoController(config_file=f"plate_balancing/servo_{i}.json")
+            for i in range(3)
+        ]
 
     def _calculate_platform_joints(self):
         """Calculate the x, y coordinates of platform connection points."""
@@ -141,10 +146,7 @@ class InverseKinematics:
 
         # Set servo angles using servo_control.py
         for i, angle in enumerate(servo_angles):
-            # servo angle here
-            # set_angle(i, angle)
-
-            continue
+            self.servos[i].set_angle(angle)
 
         return servo_angles
 
@@ -163,9 +165,6 @@ class InverseKinematics:
 def main(pitch=0, roll=0, z=0):
     """Test Inverse Kinematics calculations."""
     ik = InverseKinematics()
-    # servo_0 = ServoController(config_file="plate_balancing/servo_0.json")
-    # servo_1 = ServoController(config_file="plate_balancing/servo_1.json")
-    # servo_2 = ServoController(config_file="plate_balancing/servo_2.json")
 
     # Example target positions
     targets = [
@@ -182,6 +181,7 @@ def main(pitch=0, roll=0, z=0):
             print(
                 f"Target Pitch: {pitch}°, Roll: {roll}°, Z: {z}mm -> Servo Angles: {angles}"
             )
+            ik.move_to_position(pitch, roll, z)
         except ValueError as e:
             print(e)
 
