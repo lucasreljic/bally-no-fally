@@ -63,7 +63,7 @@ class InverseKinematics:
         """
         # Convert angles to radians
         pitch = math.radians(pitch)
-        roll = math.radians(roll)
+        roll = np.deg2rad(roll)
 
         # Create rotation matrices
         Rx = np.array(
@@ -150,7 +150,7 @@ class InverseKinematics:
         pass
 
 
-def main(roll=0, pitch=0, z=0):
+def main(pitch=0, roll=0, z=0):
     """Test Inverse Kinematics calculations."""
     ik = InverseKinematics()
     # servo_0 = ServoController(config_file="plate_balancing/servo_0.json")
@@ -159,7 +159,7 @@ def main(roll=0, pitch=0, z=0):
 
     # Example target positions
     targets = [
-        (roll, pitch, z),
+        (pitch, roll, z),
         (-5, 5, 5),
         (5, -5, 5),
         (-5, -5, 5),
@@ -192,4 +192,4 @@ if __name__ == "__main__":
     parser.add_argument("--z", type=float, default=0, help="Platform z position (mm)")
     args = parser.parse_args()
 
-    main(args)
+    main(args.pitch, args.roll, args.z)
