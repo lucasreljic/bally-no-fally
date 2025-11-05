@@ -3,7 +3,7 @@ import argparse
 import math
 import time
 
-from servo_control import ServoController
+from servo_plate_control import ServoController
 
 
 def main(freq=0.25, amp=0.8, duration=None, rate=50.0):
