@@ -133,6 +133,7 @@ class InverseKinematics:
         for i, angle in enumerate(servo_angles):
             # servo angle here
             # set_angle(i, angle)
+
             continue
 
         return servo_angles
@@ -147,3 +148,48 @@ class InverseKinematics:
         # Implementation would go here - this would be used by the PID controller
         # to determine current platform state
         pass
+
+
+def main(roll=0, pitch=0, z=0):
+    """Test Inverse Kinematics calculations."""
+    ik = InverseKinematics()
+    # servo_0 = ServoController(config_file="plate_balancing/servo_0.json")
+    # servo_1 = ServoController(config_file="plate_balancing/servo_1.json")
+    # servo_2 = ServoController(config_file="plate_balancing/servo_2.json")
+
+    # Example target positions
+    targets = [
+        (roll, pitch, z),
+        (-5, 5, 5),
+        (5, -5, 5),
+        (-5, -5, 5),
+        (0, 0, 0),
+    ]
+
+    for pitch, roll, z in targets:
+        try:
+            angles = ik.calculate_leg_angles(pitch, roll, z)
+            print(
+                f"Target Pitch: {pitch}°, Roll: {roll}°, Z: {z}mm -> Servo Angles: {angles}"
+            )
+        except ValueError as e:
+            print(e)
+
+
+if __name__ == "__main__":
+    """
+    Entry point for Inverse Kinematics test.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Test Inverse Kinematics for Stewart Platform"
+    )
+    parser.add_argument(
+        "--pitch", type=float, default=0, help="Platform pitch (degrees)"
+    )
+    parser.add_argument("--roll", type=float, default=0, help="Platform roll (degrees)")
+    parser.add_argument("--z", type=float, default=0, help="Platform z position (mm)")
+    args = parser.parse_args()
+
+    main(args)
