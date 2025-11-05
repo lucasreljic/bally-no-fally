@@ -5,6 +5,7 @@ Supports both direct angle control and position-based control with configurable 
 Uses PCA9685 hardware PWM controller to eliminate jitter.
 """
 
+import argparse
 import json
 import os
 import time
@@ -421,12 +422,12 @@ def create_servo_controller(config_file="config.json"):
 
 
 # For testing when run directly
-def main():
+def main(servo="servo_0"):
     """Test servo control with interactive commands."""
     print("Servo Control Test")
     print("Commands: angle <degrees>, pos <-1.0 to 1.0>, center, sweep, quit")
 
-    servo_controller = ServoController(config_file="plate_balancing/servo_2.json")
+    servo_controller = ServoController(config_file=f"plate_balancing/{servo}.json")
 
     try:
         while True:
@@ -469,4 +470,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    """
+    Entry point for servo control.
+    """
+    parser = argparse.ArgumentParser(description="servo control test interface")
+    parser.add_argument(
+        "--servo",
+        type=str,
+        default="servo_0",
+        help="servo identifier (e.g. servo_0, servo_1, servo_2)",
+    )
+    args = parser.parse_args()
+    main(servo=args.servo)
