@@ -11,10 +11,10 @@ class InverseKinematics:
 
     def __init__(
         self,
-        platform_radius=80,
-        first_link_length=52,
-        second_link_length=87,
-        base_radius=100,
+        platform_radius=150,
+        first_link_length=80,
+        second_link_length=95,
+        base_radius=50,
     ):
         """Initialize Ball Balancing Platform parameters.
 
