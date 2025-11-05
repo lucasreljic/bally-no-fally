@@ -1,5 +1,6 @@
 """Inverse Kinematics for Stewart Platform."""
 import math
+import time
 
 import numpy as np
 from servo_plate_control import ServoController
@@ -182,6 +183,7 @@ def main(pitch=0, roll=0, z=0):
                 f"Target Pitch: {pitch}°, Roll: {roll}°, Z: {z}mm -> Servo Angles: {angles}"
             )
             ik.move_to_position(pitch, roll, z)
+            time.sleep(1)  # Pause to observe movement
         except ValueError as e:
             print(e)
 
