@@ -34,10 +34,12 @@ class InverseKinematics:
         self.servo_angles = [math.radians(angle) for angle in self.servo_angles]
         self.platform_angles = [math.radians(angle) for angle in self.platform_angles]
 
-        # Calculate servo mounting positions - all at origin [0,0,0]
+        # Calculate servo mounting positions in 3D space
         self.servo_positions = []
-        for i in range(3):
-            self.servo_positions.append(np.array([0, 0, 0]))
+        for angle in self.servo_angles:
+            x = self.base_radius * math.cos(angle)
+            y = self.base_radius * math.sin(angle)
+            self.servo_positions.append(np.array([x, y, 0]))
 
         # Calculate platform connection points
         self.platform_joints = self._calculate_platform_joints()
@@ -88,8 +90,8 @@ class InverseKinematics:
             # Transform platform joint position
             platform_pos = R @ self.platform_joints[i] + T
 
-            # Vector from servo base to platform connection (servo at origin)
-            target_vector = platform_pos
+            # Vector from servo base to platform connection
+            target_vector = platform_pos - self.servo_positions[i]
 
             # Calculate required leg length for 2-link system
             target_distance = np.linalg.norm(target_vector)
@@ -111,8 +113,20 @@ class InverseKinematics:
             horizontal_dist = math.sqrt(target_vector[0] ** 2 + target_vector[1] ** 2)
             elevation = math.atan2(target_vector[2], horizontal_dist)
 
-            # Servo angle: positive moves up, negative moves down
-            servo_angle = math.degrees(elevation + theta - math.pi / 2)
+            # Calculate reference angle (angle when platform is at [0,0,0])
+            ref_vector = self.platform_joints[i] - self.servo_positions[i]
+            ref_distance = np.linalg.norm(ref_vector)
+            ref_cos_theta = (self.l1**2 + ref_distance**2 - self.l2**2) / (
+                2 * self.l1 * ref_distance
+            )
+            ref_cos_theta = np.clip(ref_cos_theta, -1.0, 1.0)
+            ref_theta = math.acos(ref_cos_theta)
+            ref_horizontal_dist = math.sqrt(ref_vector[0] ** 2 + ref_vector[1] ** 2)
+            ref_elevation = math.atan2(ref_vector[2], ref_horizontal_dist)
+            ref_angle = ref_elevation + ref_theta - math.pi / 2
+
+            # Servo angle: positive moves up, negative moves down, zero at reference
+            servo_angle = math.degrees(elevation + theta - math.pi / 2 - ref_angle)
 
             servo_angles.append(servo_angle)
 
