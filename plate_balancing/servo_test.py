@@ -23,7 +23,7 @@ def main(freq=0.25, amp=0.8, duration=None, rate=50.0):
         s.set_position_normalized(0.0)
     time.sleep(0.5)
 
-    phases = [0.0, 2 * math.pi / 3, 4 * math.pi / 3]  # 0Â°, 120Â°, 240Â°
+    phases = [0.0, 2 * math.pi / 3, 4 * math.pi / 3]  # 0°, 120°, 240°
     t0 = time.time()
     dt = 1.0 / max(1.0, rate)
     try:
