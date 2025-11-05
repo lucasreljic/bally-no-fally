@@ -34,12 +34,10 @@ class InverseKinematics:
         self.servo_angles = [math.radians(angle) for angle in self.servo_angles]
         self.platform_angles = [math.radians(angle) for angle in self.platform_angles]
 
-        # Calculate servo mounting positions in 3D space
+        # Calculate servo mounting positions - all at origin [0,0,0]
         self.servo_positions = []
-        for angle in self.servo_angles:
-            x = self.base_radius * math.cos(angle)  # Radial position
-            y = self.base_radius * math.sin(angle)
-            self.servo_positions.append(np.array([x, y, 0]))
+        for i in range(3):
+            self.servo_positions.append(np.array([0, 0, 0]))
 
         # Calculate platform connection points
         self.platform_joints = self._calculate_platform_joints()
@@ -90,33 +88,31 @@ class InverseKinematics:
             # Transform platform joint position
             platform_pos = R @ self.platform_joints[i] + T
 
-            # Vector from servo base to platform connection
-            target_vector = platform_pos - self.servo_positions[i]
+            # Vector from servo base to platform connection (servo at origin)
+            target_vector = platform_pos
 
-            # Use law of cosines to solve for first link angle
+            # Calculate required leg length for 2-link system
             target_distance = np.linalg.norm(target_vector)
 
             # Check if target is reachable
             if target_distance > (self.l1 + self.l2):
                 raise ValueError(f"Target position unreachable for servo {i}")
+            if target_distance < abs(self.l1 - self.l2):
+                raise ValueError(f"Target position too close for servo {i}")
 
+            # Use law of cosines to find angle between first link and target vector
             cos_theta = (self.l1**2 + target_distance**2 - self.l2**2) / (
                 2 * self.l1 * target_distance
             )
             cos_theta = np.clip(cos_theta, -1.0, 1.0)  # Prevent domain errors
-
-            # Calculate servo angle in servo's local coordinate frame
             theta = math.acos(cos_theta)
 
-            # Project onto servo's radial plane and calculate final angle
-            xy_dist = math.sqrt(target_vector[0] ** 2 + target_vector[1] ** 2)
-            elevation = math.atan2(target_vector[2], xy_dist)
+            # Calculate elevation angle from horizontal to target
+            horizontal_dist = math.sqrt(target_vector[0] ** 2 + target_vector[1] ** 2)
+            elevation = math.atan2(target_vector[2], horizontal_dist)
 
-            # Combine angles and convert to degrees
-            servo_angle = math.degrees(theta + elevation)
-
-            # Add offset based on servo mounting angle
-            servo_angle += math.degrees(self.servo_angles[i])
+            # Servo angle: positive moves up, negative moves down
+            servo_angle = math.degrees(elevation + theta - math.pi / 2)
 
             servo_angles.append(servo_angle)
 
