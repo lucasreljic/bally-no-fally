@@ -1,474 +1,213 @@
-"""AprilTag-based plate orientation estimation.
-
-- Detects individual AprilTags on a plate
-- Calculates average roll and pitch from individual tag orientations
-- Uses single reference tag (ID 3) on floor for camera-independent measurements
-- Provides callbacks for angles and optional visualization frame
-"""
+"""AprilTag plate roll and pitch detector."""
 
 import cv2
 import numpy as np
 from pupil_apriltags import Detector
 
+TAG_SIZE = 0.032  # Tag side length in meters
+npz_path = "camera_calibration.npz"
 
-class AprilTagPlateDetector:
-    """Detect AprilTags on a plate and estimate its orientation."""
+GROUND_TAG_IDS = [0, 1, 2]
+PLATFORM_TAG_IDS = [3, 4, 5]
+ROLL_TAG_ID = 5  # Tag whose inline direction defines the roll axis on the platform
 
-    def __init__(
-        self,
-        npz_path="camera_calibration.npz",
-        tag_size_m=0.018,
-        cam_index=0,
-        families="tag36h11",
-        decimate=1.0,
-        blur=0.0,
-        expected_tag_ids=None,
-        reference_tag_id=3,
-        angle_callback=None,
-        frame_callback=None,
-    ):
-        """
-        Args:
-            npz_path: path to .npz camera calibration file
-                      (must contain 'camera_matrix' and 'dist_coeffs')
-            tag_size_m: black-square edge length of the tag (meters)
-            cam_index: index of the camera for cv2.VideoCapture
-            families: AprilTag family string for the Detector
-            decimate: image decimation factor for detector
-            blur: Gaussian blur sigma for detector (0 = off)
-            expected_tag_ids: optional iterable of tag IDs to use (e.g. [0,1,2])
-            reference_tag_id: AprilTag ID on floor for reference (e.g. 3)
-            angle_callback: function(roll_deg, pitch_deg, z_m)
-            frame_callback: optional function(frame) -> bool
-                            if returns False, run() loop stops
-        """
-        self.tag_size_m = tag_size_m
-        self.K, self.dist, self.intrinsics = self._load_intrinsics(npz_path)
+# Number of frames to average over
+avg_frames = 5
 
-        self.detector = Detector(
-            families=families,
-            nthreads=1,  # Use 1 thread for better performance than 0 (auto)
-            quad_decimate=decimate,
-            quad_sigma=blur,
-            refine_edges=True,
-            decode_sharpening=0.25,  # Reduce processing for speed
-        )
+try:
+    with np.load(npz_path) as data:
+        camera_matrix = data["camera_matrix"]
+        dist_coeffs = data["dist_coeffs"]
 
-        self.cap = cv2.VideoCapture(cam_index)
-        if not self.cap.isOpened():
-            raise RuntimeError(f"Camera error: could not open camera at index {cam_index}")
-        
-        # Optimize camera settings for performance
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer to minimize lag
-        self.cap.set(cv2.CAP_PROP_FPS, 30)  # Set reasonable frame rate
-        
-        # Test reading a frame to ensure camera is working
-        test_ok, test_frame = self.cap.read()
-        if not test_ok:
-            self.cap.release()
-            raise RuntimeError(f"Camera error: camera {cam_index} opened but cannot read frames. Try a different camera index.")
-        
-        print(f"Successfully opened camera {cam_index} with resolution: {test_frame.shape[:2]}")
+        fx = camera_matrix[0, 0]
+        fy = camera_matrix[1, 1]
+        cx = camera_matrix[0, 2]
+        cy = camera_matrix[1, 2]
+        CAMERA_PARAMS = (fx, fy, cx, cy)
 
-        self.expected_tag_ids = expected_tag_ids
-        self.reference_tag_id = reference_tag_id
-        self.reference_normal = None  # Will store floor plane normal
-        self.angle_callback = angle_callback
-        self.frame_callback = frame_callback
-
-    def run(self):
-        """
-        Main loop: grab frames, estimate plate orientation, call callbacks.
-
-        angle_callback(roll_deg, pitch_deg, z_m)
-        frame_callback(vis_frame) -> bool (return False to stop loop)
-        """
-        try:
-            while True:
-                ok, frame = self.cap.read()
-                if not ok:
-                    raise RuntimeError("Camera error: failed to grab frame")
-
-                roll_deg, pitch_deg, z_m, vis_frame = self.process_frame(frame)
-
-                # Only call angle callback when we have a valid estimate
-                if self.angle_callback is not None and roll_deg is not None:
-                    self.angle_callback(roll_deg, pitch_deg, z_m)
-
-                # Always call frame callback (for live view + debugging)
-                if self.frame_callback is not None:
-                    if not self.frame_callback(vis_frame):
-                        break
-        finally:
-            self.cap.release()
-            cv2.destroyAllWindows()
-
-    def process_frame(self, frame):
-        """
-        Process a single frame: detect tags, estimate plate plane.
-
-        Returns:
-            roll_deg, pitch_deg, z_m, vis_frame
-
-        Notes:
-            - If fewer than 2 usable tags or geometry is degenerate:
-              roll_deg, pitch_deg, z_m are None, and an error message is
-              drawn on vis_frame for debugging.
-        """
-        tags = self._detect_tags(frame)
-        
-        # Separate reference tag from plate tags
-        reference_tag = None
-        plate_tags = []
-        
-        for tag in tags:
-            if tag["id"] == self.reference_tag_id:
-                reference_tag = tag
-            else:
-                plate_tags.append(tag)
-        
-        # Update reference plane if reference tag is detected
-        if reference_tag is not None:
-            self._update_reference_plane(reference_tag)
-
-        roll_deg = pitch_deg = z_m = None
-        centroid = normal = None
-        error_msg = None
-
-        if len(plate_tags) < 1:
-            error_msg = "No plate tags detected."
-        else:
-            # Calculate average roll/pitch from individual plate tags
-            try:
-                roll_values = []
-                pitch_values = []
-                z_values = []
-                
-                for tag in plate_tags:
-                    tag_roll, tag_pitch = self._get_tag_angles(tag)
-                    if tag_roll is not None and tag_pitch is not None:
-                        # Convert to reference frame if we have a reference
-                        if self.reference_normal is not None:
-                            tag_roll, tag_pitch = self._angles_relative_to_reference_individual(tag_roll, tag_pitch)
-                        
-                        roll_values.append(tag_roll)
-                        pitch_values.append(tag_pitch)
-                        z_values.append(tag["t"][2])
-                
-                if len(roll_values) > 0:
-                    roll_deg = float(np.mean(roll_values))
-                    pitch_deg = float(np.mean(pitch_values))
-                    z_m = float(np.mean(z_values))
-                else:
-                    error_msg = "Could not calculate angles from any plate tags."
-                    
-            except ValueError as e:
-                error_msg = str(e)
-
-        vis = frame.copy()
-        vis = self._draw_tags(vis, tags)
-        if centroid is not None and normal is not None:
-            vis = self._draw_plane_normal(vis, centroid, normal)
-        
-        # Draw reference tag differently if present
-        if reference_tag is not None:
-            vis = self._draw_reference_tag(vis, reference_tag)
-
-        if error_msg is not None:
-            cv2.putText(
-                vis,
-                error_msg,
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2,
-            )
-
-        return roll_deg, pitch_deg, z_m, vis
-
-    def _load_intrinsics(self, npz_path: str):
-        data = np.load(npz_path)
-        K = np.asarray(data["camera_matrix"], float).reshape(3, 3)
-        dist = np.asarray(data["dist_coeffs"], float).ravel()
-        fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-        return K, dist, (fx, fy, cx, cy)
-
-    def _detect_tags(self, frame):
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        fx, fy, cx, cy = self.intrinsics
-
-        detections = self.detector.detect(
-            gray,
-            estimate_tag_pose=True,
-            camera_params=(fx, fy, cx, cy),
-            tag_size=self.tag_size_m,
-        )
-
-        # Store full detections for reuse (avoiding redundant detection calls)
-        self._cached_detections = {d.tag_id: d for d in detections}
-
-        tags = []
-        for d in detections:
-            if self.expected_tag_ids is not None and d.tag_id not in self.expected_tag_ids:
-                continue
-            t = np.asarray(d.pose_t, float).reshape(3)
-            tags.append(
-                {
-                    "id": d.tag_id,
-                    "t": t,
-                    "center": tuple(map(int, d.center)),
-                    "corners": d.corners.astype(int),
-                }
-            )
-        # Sort by ID for consistency
-        tags.sort(key=lambda x: x["id"])
-        return tags
-
-    def _fit_plane(self, pts):
-        """
-        Least-squares plane through N>=3 points (in camera frame).
-        Returns centroid and unit normal (normal.z forced >= 0 to define 'forward').
-        """
-        P = np.stack(pts, axis=0)
-        centroid = P.mean(axis=0)
-        _, _, Vt = np.linalg.svd(P - centroid)
-        normal = Vt[-1]
-        normal /= np.linalg.norm(normal)
-        if normal[2] < 0: 
-            normal = -normal
-        return centroid, normal
-
-    def _plane_from_two(self, p1, p2):
-        """
-        Approximate plane from origin and two tag positions (2 tags case).
-        """
-        v1 = p1
-        v2 = p2
-        n = np.cross(v1, v2)
-        if np.linalg.norm(n) < 1e-8:
-            raise ValueError("Messed up geometry with 2 tags.")
-        n /= np.linalg.norm(n)
-        if n[2] < 0:
-            n = -n
-        centroid = 0.5 * (p1 + p2)
-        return centroid, n
-
-    def _angles_from_normal(self, n):
-        """
-        Compute roll, pitch (in degrees) from plane normal in camera frame.
-
-        Camera frame (OpenCV): x right, y down, z forward.
-        For a level plate facing the camera, normal ~ (0, 0, 1) -> roll=0, pitch=0.
-        """
-        nx, ny, nz = n
-        roll = np.arctan2(ny, nz)  # rotation about x-axis
-        pitch = np.arctan2(-nx, np.sqrt(ny * ny + nz * nz))  # rotation about y-axis
-        return float(np.degrees(roll)), float(np.degrees(pitch))
-
-    def _get_tag_angles(self, tag):
-        """
-        Get roll and pitch angles from individual tag's orientation.
-        Uses cached detection results to avoid redundant detection calls.
-        """
-        tag_id = tag["id"]
-        
-        # Use cached detection result instead of re-detecting
-        if hasattr(self, '_cached_detections') and tag_id in self._cached_detections:
-            d = self._cached_detections[tag_id]
-            # Get the rotation matrix and extract the normal (Z-axis of the tag)
-            R = np.asarray(d.pose_R, dtype=float).reshape(3, 3)
-            # The third column of R is the tag's Z-axis (normal direction)
-            tag_normal = R[:, 2]
-            
-            # Calculate roll and pitch from the tag's normal
-            return self._angles_from_normal(tag_normal)
-        
-        return None, None
-
-    def _update_reference_plane(self, reference_tag):
-        """
-        Update the reference plane normal from single floor AprilTag.
-        The reference tag should be placed flat on the floor/level surface.
-        Uses cached detection results to avoid redundant detection calls.
-        """
-        tag_id = self.reference_tag_id
-        
-        # Use cached detection result instead of re-detecting
-        if hasattr(self, '_cached_detections') and tag_id in self._cached_detections:
-            d = self._cached_detections[tag_id]
-            # Get the rotation matrix and extract the normal (Z-axis of the tag)
-            R = np.asarray(d.pose_R, dtype=float).reshape(3, 3)
-            # The third column of R is the tag's Z-axis (normal direction)
-            tag_normal = R[:, 2]
-
-                
-            self.reference_normal = tag_normal / np.linalg.norm(tag_normal)
-
-    def _angles_relative_to_reference_individual(self, tag_roll, tag_pitch):
-        """
-        Calculate roll and pitch relative to the reference plane for individual tag.
-        """
-        if self.reference_normal is None:
-            return tag_roll, tag_pitch
-            
-        # Calculate roll and pitch of reference plane
-        ref_roll, ref_pitch = self._angles_from_normal(self.reference_normal)
-        
-        # Relative angles = tag angles - reference angles
-        relative_roll = tag_roll - ref_roll
-        relative_pitch = tag_pitch - ref_pitch
-        print(ref_roll, ref_pitch)
-        
-        return relative_roll, relative_pitch
-            
-    def _angles_relative_to_reference(self, plate_normal):
-        """
-        Calculate roll and pitch relative to the reference plane.
-        """
-        if self.reference_normal is None:
-            return self._angles_from_normal(plate_normal)
-            
-        # Calculate the relative normal by comparing plate normal to reference normal
-        # This gives us the orientation relative to the floor plane
-        
-        # Method 1: Direct angle calculation between normals
-        # First, project both normals onto a common reference frame
-        
-        # Calculate roll and pitch of reference plane
-        ref_roll, ref_pitch = self._angles_from_normal(self.reference_normal)
-        
-        # Calculate roll and pitch of plate
-        plate_roll, plate_pitch = self._angles_from_normal(plate_normal)
-        
-        # Relative angles = plate angles - reference angles
-        relative_roll = plate_roll - ref_roll
-        relative_pitch = plate_pitch - ref_pitch
-        
-        return relative_roll, relative_pitch
-
-    # ---------- visualization ----------
-
-    def _draw_reference_tag(self, img, reference_tag):
-        """Draw reference tag with different color to distinguish it."""
-        corners = reference_tag["corners"]
-        for i in range(4):
-            p1 = tuple(corners[i])
-            p2 = tuple(corners[(i + 1) % 4])
-            cv2.line(img, p1, p2, (0, 255, 0), 3)  # Green for reference
-        cv2.circle(img, reference_tag["center"], 6, (0, 255, 0), -1)
-        cv2.putText(
-            img,
-            f"REF:{reference_tag['id']}",
-            (reference_tag["center"][0] + 5, reference_tag["center"][1] - 10),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-        )
-        return img
-
-    def _draw_tags(self, img, tags):
-        """Draw tag outlines and centers."""
-        for t in tags:
-            corners = t["corners"]
-            for i in range(4):
-                p1 = tuple(corners[i])
-                p2 = tuple(corners[(i + 1) % 4])
-                cv2.line(img, p1, p2, (0, 255, 255), 2)
-            cv2.circle(img, t["center"], 4, (0, 0, 255), -1)
-            cv2.putText(
-                img,
-                f"id:{t['id']}",
-                (t["center"][0] + 5, t["center"][1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 255, 255),
-                1,
-            )
-        return img
-
-    def _draw_plane_normal(self, img, centroid, normal, length_scale=0.08):
-        """
-        Draw the plane normal as a 'forward' arrow originating from the centroid.
-        """
-        fx, fy, cx, cy = self.intrinsics
-
-        def project(point3d):
-            x, y, z = point3d
-            if z <= 0:
-                return None
-            u = fx * x / z + cx
-            v = fy * y / z + cy
-            return int(u), int(v)
-
-        p0 = project(centroid)
-        p1 = project(centroid + normal * length_scale)
-
-        if p0 is not None and p1 is not None:
-            cv2.arrowedLine(img, p0, p1, (0, 0, 255), 2, tipLength=0.2)
-            cv2.putText(
-                img,
-                "forward",
-                (p1[0] + 5, p1[1]),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 0, 255),
-                1,
-            )
-
-        return img
+        print("Loaded camera intrinsics:")
+        print("fx, fy, cx, cy =", CAMERA_PARAMS)
+except Exception as e:
+    print(f"Error loading camera intrinsics from {npz_path}: {e}")
+    exit(1)
 
 
-def find_available_cameras(max_cameras=5):
+def compute_plane_normal(points):
+    """Compute the unit normal vector of a plane defined by three points.
+
+    Uses the cross product of two vectors in the plane to find the normal vector,
+    which is then normalized to unit length.
+
+    Args:
+        points (list): List of three 3D points (numpy arrays) defining the plane.
+                       Points should be in the format [p0, p1, p2] where each
+                       point is a numpy array of shape (3,).
+
+    Returns:
+        numpy.ndarray or None: Unit normal vector of the plane as a numpy array
+                               of shape (3,), or None if the points are nearly
+                               collinear (cannot define a unique plane).
     """
-    Find available camera indices.
-    Returns list of working camera indices.
+    p0, p1, p2 = points
+    v1 = p1 - p0
+    v2 = p2 - p0
+    n_raw = np.cross(v1, v2)
+    norm_n = np.linalg.norm(n_raw)
+    if norm_n < 1e-9:
+        return None
+    return n_raw / norm_n  # unit normal
+
+
+def compute_pitch_roll_from_normals(n_ground, n_plate, plate_pts, tag_positions):
+    """Calculate pitch and roll angles of the platform relative to the ground.
+
+    - 'Pitch' corresponds to rotation about the axis aligned with tag ID 5 (inline axis)
+    - 'Roll' corresponds to rotation about the perpendicular axis in the platform plane
     """
-    available_cameras = []
-    print("Scanning for available cameras...")
-    
-    for i in range(max_cameras):
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            ret, frame = cap.read()
-            if ret:
-                print(f"Camera {i}: Available ({frame.shape[:2]})")
-                available_cameras.append(i)
-            else:
-                print(f"Camera {i}: Opens but cannot read frames")
-            cap.release()
-        else:
-            print(f"Camera {i}: Not available")
-    
-    return available_cameras
+    # ---- Ground frame basis ----
+    z_g = n_ground
+    x0 = np.array([1.0, 0.0, 0.0])
+    if abs(np.dot(x0, z_g)) > 0.9:
+        x0 = np.array([0.0, 1.0, 0.0])
+
+    x_g = x0 - np.dot(x0, z_g) * z_g
+    x_g = x_g / np.linalg.norm(x_g)
+    y_g = np.cross(z_g, x_g)
+    y_g = y_g / np.linalg.norm(y_g)
+
+    R_cam_g = np.column_stack((x_g, y_g, z_g))
+
+    # ---- Platform frame basis ----
+    z_p = n_plate
+    plate_pts_arr = np.vstack(plate_pts)
+    centroid = plate_pts_arr.mean(axis=0)
+
+    if 5 in tag_positions:
+        roll_dir = tag_positions[5] - centroid
+    else:
+        roll_dir = plate_pts_arr[0] - centroid
+
+    roll_dir = roll_dir - np.dot(roll_dir, z_p) * z_p
+    roll_dir /= np.linalg.norm(roll_dir)
+    x_p = roll_dir
+    y_p = np.cross(z_p, x_p)
+    y_p = y_p / np.linalg.norm(y_p)
+
+    R_cam_p = np.column_stack((x_p, y_p, z_p))
+    R_g_p = R_cam_g.T @ R_cam_p
+
+    # Extract (flipped) pitch and roll
+    r20 = np.clip(R_g_p[2, 0], -1.0, 1.0)
+    roll_rad = -np.arcsin(r20)  # swapped
+    pitch_rad = np.arctan2(R_g_p[2, 1], R_g_p[2, 2])  # swapped
+
+    roll_deg = np.degrees(roll_rad)
+    roll_deg = -roll_deg
+    pitch_deg = np.degrees(pitch_rad)
+
+    return pitch_deg, roll_deg
 
 
-if __name__ == "__main__":
-    
-    # Find available cameras first
-    available_cameras = find_available_cameras()
-    if not available_cameras:
-        print("Error: No working cameras found!")
-        exit(1)
-    
-    print(f"\nUsing camera {available_cameras[0]}")
-    
-    def angle_cb(roll, pitch, z):
-        print(f"roll={roll:+6.2f} deg  pitch={pitch:+6.2f} deg  z={z:.3f} m")
+# -------------------------------
+# AprilTag Detector setup
+# -------------------------------
+detector = Detector(
+    families="tag36h11",
+    nthreads=4,
+    quad_decimate=1.0,
+    refine_edges=1,
+    decode_sharpening=0.25,
+)
 
-    def frame_cb(frame):
-        cv2.imshow("AprilTag Plate", frame)
-        key = cv2.waitKey(1) & 0xFF
-        return key not in (27, ord("q"))  # ESC or 'q' to quit
+# -------------------------------
+# Video capture
+# -------------------------------
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Could not open camera.")
+    exit(1)
 
-    detector = AprilTagPlateDetector(
-        npz_path="camera_calibration.npz",
-        tag_size_m=0.018,
-        cam_index=available_cameras[0],  # Use first available camera
-        expected_tag_ids=None, 
-        reference_tag_id=3,  # Place tag ID 3 on the floor as reference
-        angle_callback=angle_cb,
-        frame_callback=frame_cb,
+print("Press 'q' to quit.\n")
+
+pitch_values = []
+roll_values = []
+frame_counter = 0
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Camera frame not received.")
+        break
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    detections = detector.detect(
+        gray, estimate_tag_pose=True, camera_params=CAMERA_PARAMS, tag_size=TAG_SIZE
     )
-    detector.run()
+
+    tag_positions = {}
+    for det in detections:
+        tag_id = det.tag_id
+        t_cam_tag = np.array(det.pose_t).flatten()
+        tag_positions[tag_id] = t_cam_tag
+
+        corners = det.corners.astype(int)
+        cv2.polylines(frame, [corners], True, (0, 255, 0), 2)
+        cX, cY = corners.mean(axis=0).astype(int)
+        cv2.putText(
+            frame,
+            f"ID:{tag_id}",
+            (cX - 15, cY - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+        )
+
+    ground_found = all(t in tag_positions for t in GROUND_TAG_IDS)
+    platform_found = all(t in tag_positions for t in PLATFORM_TAG_IDS)
+
+    if ground_found and platform_found:
+        ground_pts = [tag_positions[t] for t in GROUND_TAG_IDS]
+        plate_pts = [tag_positions[t] for t in PLATFORM_TAG_IDS]
+
+        n_ground = compute_plane_normal(ground_pts)
+        n_plate = compute_plane_normal(plate_pts)
+
+        if n_ground is not None and n_plate is not None:
+            # Make normals roughly point in the same direction
+            if np.dot(n_ground, n_plate) < 0:
+                n_plate = -n_plate
+
+            pitch, roll = compute_pitch_roll_from_normals(
+                n_ground, n_plate, plate_pts, tag_positions
+            )
+
+            pitch_values.append(pitch)
+            roll_values.append(roll)
+            frame_counter += 1
+
+            if frame_counter >= avg_frames:
+                avg_pitch = np.mean(pitch_values[-avg_frames:])
+                avg_roll = np.mean(roll_values[-avg_frames:])
+                print(
+                    f"Average over last {avg_frames} frames → Pitch: {avg_pitch:.2f}°, Roll: {avg_roll:.2f}°"
+                )
+                frame_counter = 0
+
+        else:
+            print(
+                "Could not compute one of the plane normals (points nearly collinear)."
+            )
+    else:
+        if not ground_found:
+            print("Missing one or more ground tags.")
+        if not platform_found:
+            print("Missing one or more platform tags.")
+
+    cv2.imshow("AprilTag Detection", frame)
+    if cv2.waitKey(1) & 0xFF == ord("q"):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
