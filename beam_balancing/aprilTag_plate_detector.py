@@ -113,10 +113,10 @@ def compute_pitch_roll_from_normals(n_ground, n_plate, plate_pts, tag_positions)
 # -------------------------------
 detector = Detector(
     families="tag36h11",
-    nthreads=4,
-    quad_decimate=1.0,
+    nthreads=6,
+    quad_decimate=1.0,  # Increase to reduce false detections
     refine_edges=1,
-    decode_sharpening=0.25,
+    decode_sharpening=0.25,  # Reduce sharpening to avoid noise amplification
 )
 
 # -------------------------------
@@ -140,6 +140,11 @@ while True:
         break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    # More aggressive preprocessing
+    gray = cv2.convertScaleAbs(gray, alpha=1.2, beta=0)
+    gray = cv2.medianBlur(gray, 5)  # Better noise reduction
+    gray = cv2.bilateralFilter(gray, 2, 75, 75)  # Edge-preserving smoothing
 
     detections = detector.detect(
         gray, estimate_tag_pose=True, camera_params=CAMERA_PARAMS, tag_size=TAG_SIZE
