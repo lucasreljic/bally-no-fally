@@ -184,9 +184,70 @@ class AprilTagPlateDetector:
 
         return tag_positions, detected_tag_ids
 
+    def find_and_draw_plate_center(self, frame, tag_positions):
+        """Find the center of the three plate tags and draw it on the frame.
+
+        Args:
+            frame: The video frame to draw on
+            tag_positions: Dictionary of detected tag positions in 3D space
+
+        Returns:
+            center_2d: The 2D pixel coordinates of the center point, or None if not all tags available
+        """
+        # Check if all platform tags are available (either detected or from last known positions)
+        available_platform_tags = []
+        for tag_id in self.PLATFORM_TAG_IDS:
+            if tag_id in tag_positions:
+                available_platform_tags.append(tag_id)
+            elif tag_id in self.last_known_positions:
+                available_platform_tags.append(tag_id)
+
+        if len(available_platform_tags) == 3:
+            # Get 3D positions of all three platform tags
+            plate_positions_3d = []
+            for tag_id in self.PLATFORM_TAG_IDS:
+                if tag_id in tag_positions:
+                    plate_positions_3d.append(tag_positions[tag_id])
+                else:
+                    plate_positions_3d.append(self.last_known_positions[tag_id])
+
+            # Calculate the center point in 3D space
+            center_3d = np.mean(plate_positions_3d, axis=0)
+
+            # Project the 3D center point to 2D image coordinates
+            fx, fy, cx, cy = self.camera_params
+
+            # Simple perspective projection
+            if center_3d[2] > 0:  # Make sure the point is in front of the camera
+                u = fx * (center_3d[0] / center_3d[2]) + cx
+                v = fy * (center_3d[1] / center_3d[2]) + cy
+                center_2d = (int(u), int(v))
+
+                # Draw the center point on the frame
+                cv2.circle(frame, center_2d, 8, (255, 0, 0), -1)  # Blue filled circle
+                cv2.circle(frame, center_2d, 12, (255, 255, 255), 2)  # White outer ring
+
+                # Add text label
+                cv2.putText(
+                    frame,
+                    "Plate Center",
+                    (center_2d[0] - 40, center_2d[1] - 20),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                )
+
+                return center_2d
+
+        return None
+
     def process_frame(self, frame):
         """Process a single frame and return pitch/roll if available."""
         tag_positions, detected_tag_ids = self.detect_tags(frame)
+
+        # Find and draw the center of the plate tags
+        self.find_and_draw_plate_center(frame, tag_positions)
 
         # Check if we have current detections or can use last known positions
         ground_found = all(t in tag_positions for t in self.GROUND_TAG_IDS)
