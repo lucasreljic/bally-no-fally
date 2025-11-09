@@ -92,6 +92,10 @@ class AprilTagDetector:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         fx, fy, cx, cy = self.intrinsics
 
+        # More aggressive preprocessing
+        gray = cv2.convertScaleAbs(gray, alpha=1.2, beta=0)
+        gray = cv2.medianBlur(gray, 5)  # Better noise reduction
+        gray = cv2.bilateralFilter(gray, 2, 75, 75)  # Edge-preserving smoothing
         # Detect + estimate pose
         detections = self.detector.detect(
             gray,

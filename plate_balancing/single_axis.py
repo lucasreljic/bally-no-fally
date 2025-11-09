@@ -9,7 +9,9 @@ This module:
 """
 
 import argparse
+import os
 import queue
+import sys
 import time
 from threading import Thread
 
@@ -18,8 +20,14 @@ import numpy as np
 import serial
 from servo_plate_control import ServoController
 
-from beam_balancing.apriltags_detector import AprilTagDetector
-from beam_balancing.ball_detection import BallDetector
+try:
+    from beam_balancing.apriltags_detector import AprilTagDetector
+    from beam_balancing.ball_detection import BallDetector
+except ImportError:
+    # Add parent directory to path for imports
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from beam_balancing.apriltags_detector import AprilTagDetector
+    from beam_balancing.ball_detection import BallDetector
 
 
 class PIDController:
@@ -30,9 +38,9 @@ class PIDController:
         args,
         servo_port="/dev/ttyUSB0",
         neutral_angle=11.4,
-        kp=0.08,
-        ki=0.04,
-        kd=0.015,
+        kp=0.05,
+        ki=0.02,
+        kd=0.005,
         scale_factor=0.25,
     ):
         """Initialize controller, load config, set defaults and queues."""
@@ -40,17 +48,18 @@ class PIDController:
         # with open(config_file, 'r') as f:
         #     self.config = json.load(f)
         # PID gains (controlled by sliders in GUI)
+
         self.Kp = kp
         self.Ki = ki
         self.Kd = kd
 
         self.visualization = not args.no_vis
         self.servo_name = 5 - args.tag_num
-        self.scale_error = 100
+        self.scale_error = 50
         # Beam length
-        self.length_beam = 0.114  # meters
+        self.length_beam = 0.298  # meters
         self.deadband = 0.005  # meters
-        self.I_range = 0.06 * self.scale_error  # meters
+        self.I_range = 0.09 * self.scale_error  # meters
         # Scale factor for converting from pixels to meters
         self.scale_factor = scale_factor
         # Servo port name and center angle
@@ -133,7 +142,7 @@ class PIDController:
         cap = cv.VideoCapture(0)
         cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv.CAP_PROP_FPS, 30)
-        detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.014)
+        detector = AprilTagDetector("camera_calibration.npz", tag_size_m=0.032)
         ball_detector = BallDetector()
         while self.running:
             ret, frame = cap.read()
@@ -147,16 +156,25 @@ class PIDController:
             frame = cv.convertScaleAbs(frame, alpha=alpha, beta=beta)
             # Convert the frame from BGR to HSV color space to easily identify a colour
             # Get detection results with overlay
+            found = False
             pose_data = detector.detect_apriltag_poses(frame)
-            tag_position = pose_data[0] if pose_data else None
+            tag_position = None
+            required_tag = (
+                5 - self.servo_name
+            )  # or args.tag_num depending on what you want to track
+            for pose_info in pose_data:
+                if pose_info["tag_id"] == required_tag:
+                    tag_position = pose_info
+                    break
 
-            vis_frame, found, _, distance_to_tag = ball_detector.draw_detection(
-                frame, apriltag_position=tag_position
-            )
+            if tag_position:
+                vis_frame, found, _, distance_to_tag = ball_detector.draw_detection(
+                    frame, apriltag_position=tag_position
+                )
 
             if found and distance_to_tag:
                 # Convert normalized to meters using scale
-                position_m = (distance_to_tag - 0.038) - self.length_beam / 2
+                position_m = (distance_to_tag - 0.04) - self.length_beam / 2
                 # Always keep latest measurement only
                 try:
                     if self.position_queue.full():
@@ -170,7 +188,7 @@ class PIDController:
                 print("[CAMERA] Could not find ball")
             # Show processed video with overlays (comment out for speed)
             # Live preview for debugging
-            if self.visualization:
+            if found and self.visualization:
                 frame_with_overlay = detector.draw_detection_overlay(
                     vis_frame, pose_data
                 )
@@ -179,7 +197,16 @@ class PIDController:
                 height = int(frame_with_overlay.shape[0] * scale_percent / 100)
                 frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
                 cv.imshow("frame", frame_with_overlay)
-
+            elif self.visualization:
+                vis_frame, _, _, distance_to_tag = ball_detector.draw_detection(frame)
+                frame_with_overlay = detector.draw_detection_overlay(
+                    vis_frame, pose_data
+                )
+                scale_percent = 50
+                width = int(frame_with_overlay.shape[1] * scale_percent / 100)
+                height = int(frame_with_overlay.shape[0] * scale_percent / 100)
+                frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
+                cv.imshow("frame", frame_with_overlay)
             if cv.waitKey(1) & 0xFF == 27:  # ESC exits
                 self.running = False
                 break
@@ -192,10 +219,10 @@ class PIDController:
         #     print("[ERROR] No servo - running in simulation mode")
         if not self.servo:
             self.servo = ServoController(
-                config_file=f"plate_balancing/servo{str(self.servo_name)}.json"
+                config_file=f"plate_balancing/servo_{str(self.servo_name)}.json"
             )
             print(
-                f"[SERVO] Using servo config: plate_balancing/servo{str(self.servo_name)}.json"
+                f"[SERVO] Using servo config: plate_balancing/servo_{str(self.servo_name)}.json"
             )
         self.start_time = time.time()
         while self.running:
@@ -205,7 +232,7 @@ class PIDController:
                 # Compute control output using PID
                 control_output = self.update_pid(position)
                 # Send control command to servo (real or simulated)
-                self.set_servo_pos(control_output)
+                self.set_servo_pos(-control_output)
                 # Log results for plotting
                 current_time = time.time() - self.start_time
                 self.time_log.append(current_time)
