@@ -329,7 +329,11 @@ class AprilTagPlateDetector:
 
         return None, None, False
 
-    def run(self, camera_index=0):
+    def detect_from_frame(self, frame):
+        """Return averaged pitch and roll (deg) from an external camera frame."""
+        return self.process_frame(frame)
+
+    def run(self, camera_index=2):
         """Run the main detection loop."""
         cap = cv2.VideoCapture(camera_index)
         if not cap.isOpened():
