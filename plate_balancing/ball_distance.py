@@ -178,17 +178,18 @@ class BallDistanceCalculator:
             "angle_degrees": angle,
         }
 
-    def process_frame(self, frame):
-        """Process frame to detect tags, ball, and calculate all distances/angles.
+    def process_frame(self, frame, tag_positions):
+        """Process frame to detect ball and calculate all distances/angles.
 
         Args:
             frame: Input BGR image frame
+            tag_positions: Dictionary of detected tag positions from AprilTag detector
 
         Returns:
             dict: Complete analysis results including positions, distances, and angles
         """
-        # Detect AprilTags and get plate center
-        tag_positions, detected_tag_ids = self.tag_detector.detect_tags(frame)
+        # Get detected tag IDs from tag_positions
+        detected_tag_ids = set(tag_positions.keys())
         plate_center_2d = self.tag_detector.find_and_draw_plate_center(
             frame, tag_positions
         )
@@ -386,8 +387,11 @@ class BallDistanceCalculator:
                     print("Camera frame not received.")
                     break
 
+                # Detect AprilTags first
+                tag_positions, _ = self.tag_detector.detect_tags(frame)
+
                 # Process frame and calculate distances
-                results = self.process_frame(frame)
+                results = self.process_frame(frame, tag_positions)
 
                 # Draw visualization
                 vis_frame = self.draw_visualization(frame, results)
