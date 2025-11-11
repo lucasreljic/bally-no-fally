@@ -11,7 +11,6 @@ This module:
 import time
 
 import numpy as np
-from ball_plate_detection import ExtendedKalmanFilter
 
 
 class PIDController:
@@ -94,36 +93,31 @@ class StewartPlatformController:
         self.vel_setpoint = np.array([0.0, 0.0])
         self.z_setpoint = 0.0
 
-        # State estimation
-        self.kf = ExtendedKalmanFilter()
-
+        # Linear acceleration to angle mapping
         self.g = 9.81
         self.a_to_angle_factor = (5.0 / 7.0) * self.g
         # Target ball position (x, y)
 
-    def update_control(self, ball_pos, ball_vel, plate_pitch, plate_roll, dt=0.02):
+    def update_control(self, ball_kinematics, plate_pitch, plate_roll, dt=0.02):
         """Main PID control loop for Stewart Platform."""
         # Predict + update position and velocity
-        self.kf.predict(dt)
-        self.kf.update(ball_pos)
 
-        est_x, est_y, est_vx, est_vy = self.kf.get_state()
-
+        est_x, est_y, est_vx, est_vy = ball_kinematics
         # Outer loop (Position PI)
         vx_set, _ = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
         vy_set, _ = self.pi_y.update_pid(self.ball_setpoint[1], est_y, dt)
 
         # Middle loop (Velocity PD)
-        pitch_acc, _ = self.pd_vx.update_pid(self.vel_setpoint, est_vx, dt)
-        roll_acc, _ = self.pd_vy.update_pid(self.vel_setpoint, est_vy, dt)
+        pitch_acc, _ = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
+        roll_acc, _ = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
 
         # Map acceleration to linear angles
         pitch_des = np.degrees(np.arcsin(np.clip(pitch_acc / self.a_to_angle_factor)))
         roll_des = np.degrees(np.arcsin(np.clip(roll_acc / self.a_to_angle_factor)))
 
         # Inner loop (Plate orientation PID)
-        pitch_out, _ = self.pid_pitch.update(pitch_des, plate_pitch, dt)
-        roll_out, _ = self.pid_roll.update(roll_des, plate_roll, dt)
+        pitch_out, _ = self.pid_pitch.update_pid(pitch_des, plate_pitch, dt)
+        roll_out, _ = self.pid_roll.update_pid(roll_des, plate_roll, dt)
 
         # Z-axis offset
         z_out = self.z_setpoint

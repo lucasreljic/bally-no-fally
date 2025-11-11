@@ -9,7 +9,6 @@ using HSV color filtering and contour analysis.
 # Provides both class-based and legacy function interfaces
 
 import json
-import math
 import os
 import time
 
@@ -236,7 +235,6 @@ class BallDetector:
             center (tuple): (x, y) pixel coordinates of ball center
             radius (float): Ball radius in pixels
             position_m (tuple): Ball 3D position (x, y, z) in meters from camera
-            distance_to_tag (float): Distance from ball to AprilTag in meters (None if no tag)
             filtered_vel (tuple): Ball velocity (vx, vy, vz) in m/s from EKF
         """
         # Time update for EKF predict
@@ -269,8 +267,8 @@ class BallDetector:
             if self.ekf._initialized:
                 pred_pos, _ = self.ekf.get_state()
                 # Use predicted position and zero radius
-                return False, None, None, pred_pos, None, (0.0, 0.0, 0.0)
-            return False, None, None, (0.0, 0.0, 0.0), None, (0.0, 0.0, 0.0)
+                return False, None, None, pred_pos, (0.0, 0.0, 0.0)
+            return False, None, None, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
 
         # Select the largest contour (assumed to be the ball)
         largest_contour = max(contours, key=cv2.contourArea)
@@ -283,8 +281,8 @@ class BallDetector:
             # detection rejected; return predicted pos if available
             if self.ekf._initialized:
                 pred_pos, _ = self.ekf.get_state()
-                return False, None, None, pred_pos, None, (0.0, 0.0, 0.0)
-            return False, None, None, (0.0, 0.0, 0.0), None, (0.0, 0.0, 0.0)
+                return False, None, None, pred_pos, (0.0, 0.0, 0.0)
+            return False, None, None, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
 
         # Calculate 3D position using camera intrinsics and known ball size
         position_3d = self._calculate_3d_position((x, y), radius)
@@ -309,48 +307,13 @@ class BallDetector:
             filtered_pos = position_3d
             filtered_vel = (0.0, 0.0, 0.0)
 
-        # Calculate distance to AprilTag if provided using filtered position
-        distance_to_tag = None
-        if apriltag_position is not None:
-            distance_to_tag = self._calculate_ball_tag_distance(
-                (int(x), int(y)), filtered_pos, apriltag_position, frame.shape
-            )
-
         return (
             True,
             (int(x), int(y)),
             radius,
             filtered_pos,
-            distance_to_tag,
             filtered_vel,
         )
-
-    def _calculate_ball_tag_distance(
-        self, ball_center_px, ball_position_m, tag_data, frame_shape
-    ):
-        """Calculate 3D distance between ball and AprilTag.
-
-        Args:
-            ball_center_px (tuple): Ball center in pixels (x, y)
-            ball_position_m (tuple): Ball 3D position (x, y, z) in meters from camera
-            tag_data (dict): AprilTag pose data with 'x', 'y', 'z', 'center' keys
-            frame_shape (tuple): Frame shape (height, width, channels)
-
-        Returns:
-            float: 3D distance between ball and tag in meters
-        """
-        # Calculate true 3D distance using both ball and tag 3D positions
-        if "x" in tag_data and "y" in tag_data and "z" in tag_data:
-            ball_x, ball_y, ball_z = ball_position_m
-            tag_x, tag_y, tag_z = tag_data["x"], tag_data["y"], tag_data["z"]
-
-            # 3D Euclidean distance
-            distance = math.sqrt(
-                (ball_x - tag_x) ** 2 + (ball_y - tag_y) ** 2 + (ball_z - tag_z) ** 2
-            )
-            return distance
-
-        return None
 
     # Project a 3D point in camera coordinates to pixel coordinates
     def _project_3d_to_pixel(self, point3):

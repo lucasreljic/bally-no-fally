@@ -246,9 +246,6 @@ class AprilTagPlateDetector:
         """Process a single frame and return pitch/roll if available."""
         tag_positions, detected_tag_ids = self.detect_tags(frame)
 
-        # Find and draw the center of the plate tags
-        self.find_and_draw_plate_center(frame, tag_positions)
-
         # Check if we have current detections or can use last known positions
         ground_found = all(t in tag_positions for t in self.GROUND_TAG_IDS)
         platform_found = all(t in tag_positions for t in self.PLATFORM_TAG_IDS)
@@ -304,9 +301,9 @@ class AprilTagPlateDetector:
                         f"Average over last {self.avg_frames} frames → Pitch: {avg_pitch:.2f}°, Roll: {avg_roll:.2f}°{status_msg}"
                     )
                     self.frame_counter = 0
-                    return avg_pitch, avg_roll, using_stored
+                    return avg_pitch, avg_roll, using_stored, tag_positions
 
-                return pitch, roll, not (ground_found and platform_found)
+                return pitch, roll, not (ground_found and platform_found), tag_positions
 
             else:
                 print(
@@ -327,7 +324,7 @@ class AprilTagPlateDetector:
                     f"Missing platform tags (no stored positions): {missing_platform}"
                 )
 
-        return None, None, False
+        return None, None, False, None
 
     def detect_from_frame(self, frame):
         """Return averaged pitch and roll (deg) from an external camera frame."""

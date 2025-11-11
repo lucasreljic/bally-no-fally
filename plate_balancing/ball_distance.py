@@ -23,6 +23,7 @@ class BallDistanceCalculator:
         camera_calibration_path="camera_calibration.npz",
         ball_config_path="ball_config.json",
         tag_size=0.032,
+        detector=None,
     ):
         """Initialize the distance calculator.
 
@@ -30,12 +31,17 @@ class BallDistanceCalculator:
             camera_calibration_path (str): Path to camera calibration file
             ball_config_path (str): Path to ball detection config file
             tag_size (float): Tag side length in meters
+            detector (AprilTagPlateDetector): Optional pre-initialized tag detector
         """
         # Initialize AprilTag detector
-        self.tag_detector = AprilTagPlateDetector(
-            camera_calibration_path=camera_calibration_path,
-            tag_size=tag_size,
-            avg_frames=1,  # Use 1 for real-time calculations
+        self.tag_detector = (
+            detector
+            if detector
+            else AprilTagPlateDetector(
+                camera_calibration_path=camera_calibration_path,
+                tag_size=tag_size,
+                avg_frames=1,  # Use 1 for real-time calculations
+            )
         )
 
         # Initialize ball detector
@@ -126,7 +132,9 @@ class BallDistanceCalculator:
 
         return angle_deg
 
-    def calculate_xy_distances_from_center(self, center, ball_pos, tag5_pos):
+    def calculate_xy_distances_from_center(
+        self, center, ball_pos, tag5_pos, ball_velocity=None
+    ):
         """Calculate X,Y distances from ball to center using trigonometry (2D only).
 
         Uses the plate coordinate system where:
@@ -137,9 +145,10 @@ class BallDistanceCalculator:
             center (tuple): Center position (x, y, z) - only x,y used
             ball_pos (tuple): Ball position (x, y, z) - only x,y used
             tag5_pos (tuple): Tag 5 position (x, y, z) - only x,y used
+            ball_velocity (tuple): Ball velocity (vx, vy, vz) - only vx,vy used
 
         Returns:
-            dict: Contains x_distance, y_distance, total_distance, angle (all 2D)
+            dict: Contains x_distance, y_distance, total_distance, angle, velocity components (all 2D)
         """
         if center is None or ball_pos is None or tag5_pos is None:
             return None
@@ -171,19 +180,31 @@ class BallDistanceCalculator:
         # Calculate angle between center-tag5 direction and center-ball direction
         angle = self.calculate_angle_between_vectors_2d(center, tag5_pos, ball_pos)
 
+        # Calculate velocity components in plate coordinate system
+        x_velocity = y_velocity = total_velocity_2d = None
+        if ball_velocity is not None:
+            ball_velocity_2d = np.array([ball_velocity[0], ball_velocity[1]])
+            x_velocity = np.dot(ball_velocity_2d, x_axis_2d)
+            y_velocity = np.dot(ball_velocity_2d, y_axis_2d)
+            total_velocity_2d = np.linalg.norm(ball_velocity_2d)
+
         return {
             "x_distance": x_distance,  # Distance along tag5 direction
             "y_distance": y_distance,  # Distance perpendicular to tag5 direction
             "total_distance_2d": total_distance_2d,  # 2D distance on plate
             "angle_degrees": angle,
+            "x_velocity": x_velocity,  # Velocity along tag5 direction
+            "y_velocity": y_velocity,  # Velocity perpendicular to tag5 direction
+            "total_velocity_2d": total_velocity_2d,  # 2D velocity magnitude
         }
 
-    def process_frame(self, frame, tag_positions):
+    def process_frame(self, frame, tag_positions, ball_data=None):
         """Process frame to detect ball and calculate all distances/angles.
 
         Args:
             frame: Input BGR image frame
             tag_positions: Dictionary of detected tag positions from AprilTag detector
+            ball_data: Dictionary of detected ball data (if available)
 
         Returns:
             dict: Complete analysis results including positions, distances, and angles
@@ -194,15 +215,12 @@ class BallDistanceCalculator:
             frame, tag_positions
         )
 
-        # Detect ball
-        (
-            ball_found,
-            ball_center_2d,
-            ball_radius,
-            ball_pos_3d,
-            _,
-            ball_velocity,
-        ) = self.ball_detector.detect_ball(frame)
+        # Get ball detection results
+        ball_found = ball_data["ball_found"] if ball_data else False
+        ball_center_2d = ball_data["center"] if ball_data else None
+        ball_radius = ball_data["radius"] if ball_data else None
+        ball_pos_3d = ball_data["position_m"] if ball_data else None
+        ball_velocity = ball_data["filtered_vel"] if ball_data else None
 
         # Initialize results dictionary
         results = {
@@ -255,7 +273,7 @@ class BallDistanceCalculator:
         )
         ball_to_tag5_distance = self.calculate_distance_2d(ball_pos_3d, tag5_pos_3d)
         xy_distances = self.calculate_xy_distances_from_center(
-            plate_center_3d, ball_pos_3d, tag5_pos_3d
+            plate_center_3d, ball_pos_3d, tag5_pos_3d, ball_velocity
         )
 
         # Store distance results
@@ -387,11 +405,8 @@ class BallDistanceCalculator:
                     print("Camera frame not received.")
                     break
 
-                # Detect AprilTags first
-                tag_positions, _ = self.tag_detector.detect_tags(frame)
-
                 # Process frame and calculate distances
-                results = self.process_frame(frame, tag_positions)
+                results = self.process_frame(frame)
 
                 # Draw visualization
                 vis_frame = self.draw_visualization(frame, results)
