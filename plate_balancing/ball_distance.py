@@ -24,6 +24,7 @@ class BallDistanceCalculator:
         ball_config_path="ball_config.json",
         tag_size=0.032,
         detector=None,
+        ball_det=None,
     ):
         """Initialize the distance calculator.
 
@@ -32,6 +33,7 @@ class BallDistanceCalculator:
             ball_config_path (str): Path to ball detection config file
             tag_size (float): Tag side length in meters
             detector (AprilTagPlateDetector): Optional pre-initialized tag detector
+            ball_det (BallDetector): Optional pre-initialized ball detector
         """
         # Initialize AprilTag detector
         self.tag_detector = (
@@ -45,9 +47,13 @@ class BallDistanceCalculator:
         )
 
         # Initialize ball detector
-        self.ball_detector = BallDetector(
-            config_file=ball_config_path,
-            calibration_file=camera_calibration_path,
+        self.ball_detector = (
+            ball_det
+            if ball_det
+            else BallDetector(
+                config_file=ball_config_path,
+                calibration_file=camera_calibration_path,
+            )
         )
 
         # Load camera parameters for 3D-to-2D projection
@@ -277,7 +283,11 @@ class BallDistanceCalculator:
         )
 
         # Store distance results
-        results["distances"] = {
+        results = {
+            "ball_found": ball_found,
+            "ball_center_2d": ball_center_2d,
+            "ball_radius": ball_radius,
+            "ball_velocity": ball_velocity,
             "ball_to_center_2d": ball_to_center_distance,
             "ball_to_tag5_2d": ball_to_tag5_distance,
             "plate_center_xy": (plate_center_3d[0], plate_center_3d[1]),
@@ -287,6 +297,7 @@ class BallDistanceCalculator:
             "plate_center_3d": tuple(plate_center_3d),
             "tag5_pos_3d": tuple(tag5_pos_3d),
             "ball_pos_3d": tuple(ball_pos_3d),
+            "plate_center_2d": plate_center_2d,
             "xy_analysis": xy_distances,
         }
 
@@ -302,7 +313,7 @@ class BallDistanceCalculator:
         Returns:
             frame: Frame with visualization overlay
         """
-        if results["distances"] is None:
+        if results is None:
             if results["error_message"]:
                 cv2.putText(
                     frame,
@@ -315,7 +326,7 @@ class BallDistanceCalculator:
                 )
             return frame
 
-        distances = results["distances"]
+        distances = results
         xy_analysis = distances["xy_analysis"]
 
         # Draw ball detection with enhanced info
@@ -344,7 +355,7 @@ class BallDistanceCalculator:
                 f"Ball to Tag5 (2D): {distances['ball_to_tag5_2d']:.3f}m",
                 f"X Distance: {xy_analysis['x_distance']:.3f}m",
                 f"Y Distance: {xy_analysis['y_distance']:.3f}m",
-                f"Angle: {xy_analysis['angle_degrees']:.1f}°",
+                f"Angle: {xy_analysis['angle_degrees']:.1f}Â°",
             ]
 
             for i, text in enumerate(info_texts):
@@ -380,7 +391,6 @@ class BallDistanceCalculator:
                 cv2.putText(
                     frame, "Y", y_end, cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2
                 )
-
         return frame
 
     def run(self, camera_index=0):
@@ -412,8 +422,8 @@ class BallDistanceCalculator:
                 vis_frame = self.draw_visualization(frame, results)
 
                 # Display results in console (2D only)
-                if results["distances"] is not None:
-                    distances = results["distances"]
+                if results is not None:
+                    distances = results
                     xy_analysis = distances["xy_analysis"]
 
                     print(
@@ -421,7 +431,7 @@ class BallDistanceCalculator:
                         f"Ball-Tag5 (2D): {distances['ball_to_tag5_2d']:.3f}m, "
                         f"X: {xy_analysis['x_distance']:.3f}m, "
                         f"Y: {xy_analysis['y_distance']:.3f}m, "
-                        f"Angle: {xy_analysis['angle_degrees']:.1f}°"
+                        f"Angle: {xy_analysis['angle_degrees']:.1f}Â°"
                     )
 
                 # Show frame

@@ -245,7 +245,7 @@ class ServoController:
                         self.max_angle = pca_config.get("max_angle", self.max_angle)
 
                 print(
-                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}° to {self.max_angle}°"
+                    f"[SERVO] Loaded config: Pin {self.servo_pin}, Range {self.min_angle}Â° to {self.max_angle}Â°"
                 )
 
             except Exception as e:
@@ -355,12 +355,12 @@ class ServoController:
                     self.servo.value = servo_value
 
                 self.current_angle = angle
-                print(f"[SERVO] Set angle: {angle:.1f}°")
+                # print(f"[SERVO] Set angle: {angle:.1f}Â°")
 
             except Exception as e:
                 print(f"[SERVO] Error setting angle: {e}")
         else:
-            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}°")
+            print(f"[SERVO] Mock mode - would set angle to {angle:.1f}Â°")
             self.current_angle = angle
 
     def set_position_normalized(self, position):

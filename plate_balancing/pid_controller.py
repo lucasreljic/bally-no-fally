@@ -16,7 +16,7 @@ import numpy as np
 class PIDController:
     """PID controller for beam balancing using servo control."""
 
-    def __init__(self, args, Kp=0, Ki=0, Kd=0, scale_factor=0.25):
+    def __init__(self, Kp=0, Ki=0, Kd=0, scale_factor=0.25):
         """Initialize controller and PID parameters."""
         # PID gains
         self.Kp = Kp
@@ -26,6 +26,7 @@ class PIDController:
         self.integral = 0.0
         self.prev_error = 0.0
         self.last_time = None
+        self.scale_factor = scale_factor
 
     def reset(self):
         """Reset PID controller state."""
@@ -36,6 +37,10 @@ class PIDController:
     def update_pid(self, setpoint, position, dt=None):
         """Perform PID calculation and return control output."""
         error = setpoint - position
+        if abs(error) < 0.0002:
+            error = 0
+        error = error * self.scale_factor  # Scale error for easier tuning (if needed)
+
         current_time = time.time()
 
         # Compute time difference
@@ -77,16 +82,15 @@ class StewartPlatformController:
     def __init__(self, scale_factor=0.25):
         """Initialize Stewart Platform Controller."""
         # Outer loop (position PI)
-        self.pi_x = PIDController(Kp=0.6, Ki=0.2)
-        self.pi_y = PIDController(Kp=0.6, Ki=0.2)
-
+        self.pi_x = PIDController(Kp=110.6, Ki=6.9)
+        self.pi_y = PIDController(Kp=110.6, Ki=6.9)
         # Middle loop (velocity PD)
-        self.pd_vx = PIDController(Kp=0.5, Kd=0.1)
-        self.pd_vy = PIDController(Kp=0.5, Kd=0.1)
+        self.pd_vx = PIDController(Kp=1.5, Kd=2.5)
+        self.pd_vy = PIDController(Kp=1.5, Kd=2.5)
 
         # Inner loop (plate PID)
-        self.pid_pitch = PIDController(Kp=1.0, Ki=0.1, Kd=0.05)
-        self.pid_roll = PIDController(Kp=1.0, Ki=0.1, Kd=0.05)
+        self.pid_pitch = PIDController(Kp=1.0, Ki=0.0, Kd=0.00)
+        self.pid_roll = PIDController(Kp=1.0, Ki=0.0, Kd=0.00)
 
         # Targets
         self.ball_setpoint = np.array([0.0, 0.0])
@@ -104,20 +108,25 @@ class StewartPlatformController:
 
         est_x, est_y, est_vx, est_vy = ball_kinematics
         # Outer loop (Position PI)
-        vx_set, _ = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
-        vy_set, _ = self.pi_y.update_pid(self.ball_setpoint[1], est_y, dt)
+        vx_set = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
+        vy_set = self.pi_y.update_pid(self.ball_setpoint[1], est_y, dt)
 
         # Middle loop (Velocity PD)
-        pitch_acc, _ = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
-        roll_acc, _ = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
+        roll_acc = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
+        pitch_acc = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
 
+        print(pitch_acc)
         # Map acceleration to linear angles
-        pitch_des = np.degrees(np.arcsin(np.clip(pitch_acc / self.a_to_angle_factor)))
-        roll_des = np.degrees(np.arcsin(np.clip(roll_acc / self.a_to_angle_factor)))
+        pitch_des = np.degrees(
+            np.arcsin(np.clip(pitch_acc / self.a_to_angle_factor, -1, 1))
+        )
+        roll_des = np.degrees(
+            np.arcsin(np.clip(roll_acc / self.a_to_angle_factor, -1, 1))
+        )
 
         # Inner loop (Plate orientation PID)
-        pitch_out, _ = self.pid_pitch.update_pid(pitch_des, plate_pitch, dt)
-        roll_out, _ = self.pid_roll.update_pid(roll_des, plate_roll, dt)
+        pitch_out = self.pid_pitch.update_pid(pitch_des, plate_pitch, dt)
+        roll_out = self.pid_roll.update_pid(roll_des, plate_roll, dt)
 
         # Z-axis offset
         z_out = self.z_setpoint

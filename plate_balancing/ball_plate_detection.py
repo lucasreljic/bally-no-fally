@@ -337,7 +337,9 @@ class BallDetector:
         except Exception:
             return None
 
-    def draw_detection(self, frame, show_info=True, apriltag_position=None):
+    def draw_detection(
+        self, frame, ball_data=None, show_info=None, apriltag_position=None
+    ):
         """Detect ball and draw detection overlay on frame.
 
         Args:
@@ -352,17 +354,14 @@ class BallDetector:
             distance_to_tag: Distance to AprilTag in meters (None if no tag)
         """
         # Perform ball detection with optional tag distance calculation
-        (
-            found,
-            center,
-            radius,
-            position_m,
-            distance_to_tag,
-            filtered_vel,
-        ) = self.detect_ball(frame, apriltag_position=apriltag_position)
 
+        found = ball_data["ball_found"] if ball_data else False
+        center = ball_data["center"] if ball_data else None
+        radius = ball_data["radius"] if ball_data else None
+        position_m = ball_data["position_m"] if ball_data else None
+        filtered_vel = ball_data["filtered_vel"] if ball_data else None
         # Create overlay copy for drawing
-        overlay = frame.copy()
+        overlay = frame
 
         # Visualize detected / filtered ball
         if found:
@@ -381,18 +380,6 @@ class BallDetector:
                     (0, 255, 255),
                     1,
                 )
-
-                # Display distance to AprilTag if available
-                if distance_to_tag is not None:
-                    cv2.putText(
-                        overlay,
-                        f"dist to tag id {apriltag_position['tag_id']}: {distance_to_tag:.3f}m",
-                        (center[0] - 50, center[1] + 0),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 0),
-                        1,
-                    )
 
         # ---: predicted future-state visualization using EKF state ---
         if self.ekf._initialized:
@@ -450,7 +437,7 @@ class BallDetector:
                     cv2.circle(overlay, current_px, 5, (0, 200, 200), 1)
         # --- end prediction visualization ---
 
-        return overlay, found, position_m, distance_to_tag
+        return overlay, found, position_m
 
 
 # Legacy function for backward compatibility with existing code

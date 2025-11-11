@@ -3,7 +3,7 @@ import queue
 import threading
 import time
 
-import cv2
+import cv2 as cv
 from aprilTag_plate_detector import AprilTagPlateDetector
 from ball_distance import BallDistanceCalculator
 from ball_plate_detection import BallDetector
@@ -14,7 +14,7 @@ from pid_controller import StewartPlatformController
 class CameraThread(threading.Thread):
     """Threaded camera reader that continuously grabs frames."""
 
-    def __init__(self, camera_index=1, queue_size=2):
+    def __init__(self, camera_index=0, queue_size=2):
         """Initialize the camera thread.
 
         Args:
@@ -22,16 +22,20 @@ class CameraThread(threading.Thread):
             queue_size: Maximum number of frames to store in the queue.
         """
         super().__init__(daemon=True)
-        self.cap = cv2.VideoCapture(camera_index)
+        self.cap = cv.VideoCapture(camera_index)
         if not self.cap.isOpened():
             raise RuntimeError("Could not open camera.")
-
+        self.cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
+        self.cap.set(cv.CAP_PROP_FPS, 30)
         self.ball_detector = BallDetector()
         self.tag_detector = AprilTagPlateDetector()
-        self.ball_distance_calc = BallDistanceCalculator(detector=self.tag_detector)
+        self.ball_distance_calc = BallDistanceCalculator(
+            detector=self.tag_detector, ball_det=self.ball_detector
+        )
         # Thread-safe queues for data exchange
         self.ball_kinematics_queue = queue.Queue(maxsize=queue_size)
         self.apriltag_angles_queue = queue.Queue(maxsize=queue_size)
+        self.frames = queue.Queue(maxsize=queue_size)
         self.running = True
 
     def run(self):
@@ -42,16 +46,36 @@ class CameraThread(threading.Thread):
                 continue
 
             # --- AprilTag detection ---
-            pitch, roll, used_previous, tag_positions = self.detect_apriltags(frame)
+            (
+                pitch,
+                roll,
+                used_previous,
+                tag_positions,
+                vis_frame,
+            ) = self.detect_apriltags(frame)
             if pitch is not None and roll is not None:
                 self._put_in_queue(
                     self.apriltag_angles_queue,
                     {"pitch": pitch, "roll": roll, "used_previous": used_previous},
                 )
             # --- Ball detection ---
-            ball_data = self.detect_ball(frame, apriltag_position=tag_positions)
+            ball_data, raw_ball_data = self.detect_ball(
+                frame, apriltag_position=tag_positions
+            )
             if ball_data is not None:
                 self._put_in_queue(self.ball_kinematics_queue, ball_data)
+                self.ball_distance_calc.draw_visualization(frame, ball_data["results"])
+
+            if raw_ball_data is not None:
+                self.ball_detector.draw_detection(frame, raw_ball_data)
+
+            # Drop old frame if queue full
+            if not self.frames.empty():
+                try:
+                    self.frames.get_nowait()
+                except queue.Empty:
+                    pass
+            self.frames.put(frame)
 
     def detect_ball(self, frame, apriltag_position=None):
         """Detect the ball in the frame.
@@ -79,11 +103,15 @@ class CameraThread(threading.Thread):
             "filtered_vel": filtered_vel,
         }
         if found and apriltag_position is not None:
+            # print(ball_data["position_m"])
             results = self.ball_distance_calc.process_frame(
                 frame, apriltag_position, ball_data=ball_data
             )
-            if results["error_message"]:
+            if "error_message" in results:
                 print(f"Ball distance error: {results['error_message']}")
+                return None, ball_data
+            if "xy_analysis" not in results:
+                return None, ball_data
             x_dist = results["xy_analysis"]["x_distance"]
             y_dist = results["xy_analysis"]["y_distance"]
             x_vel = results["xy_analysis"]["x_velocity"]
@@ -93,8 +121,9 @@ class CameraThread(threading.Thread):
                 "y_dist": y_dist,
                 "x_vel": x_vel,
                 "y_vel": y_vel,
-            }
-        return None
+                "results": results,
+            }, ball_data
+        return None, None
 
     def detect_apriltags(self, frame):
         """Detect AprilTags in the frame.
@@ -105,13 +134,17 @@ class CameraThread(threading.Thread):
         Returns:
             AprilTag pose data or None if not detected.
         """
-        pitch, roll, used_previous, tag_positions = self.tag_detector.process_frame(
-            frame
-        )
+        (
+            pitch,
+            roll,
+            used_previous,
+            tag_positions,
+            vis_frame,
+        ) = self.tag_detector.process_frame(frame)
         if pitch is not None and roll is not None:
-            return pitch, roll, used_previous, tag_positions
+            return pitch, roll, used_previous, tag_positions, vis_frame
 
-        return None, None, False, None
+        return None, None, False, None, frame
 
     def _put_in_queue(self, queue_obj, data):
         """Put data in queue, dropping old data if queue is full."""
@@ -136,6 +169,15 @@ class CameraThread(threading.Thread):
         except queue.Empty:
             return None
 
+    def get_latest(self):
+        """Return the newest frame if available, else None."""
+        if self.frames.empty():
+            return None
+        try:
+            return self.frames.get_nowait()
+        except queue.Empty:
+            return None
+
     def stop(self):
         """Stop the camera thread and release resources."""
         self.running = False
@@ -145,7 +187,7 @@ class CameraThread(threading.Thread):
 class ControllerThread(threading.Thread):
     """Threaded controller for plate balancing."""
 
-    def __init__(self, camera_thread, ik_solver, dt=0.05):
+    def __init__(self, camera_thread, ik_solver, dt=0.03):
         """Initialize the controller thread.
 
         Args:
@@ -169,12 +211,12 @@ class ControllerThread(threading.Thread):
 
             if ball_data is not None and apriltag_data is not None:
                 # Extract data
-                x_dist = ball_data["x_dist"]
-                y_dist = ball_data["y_dist"]
-                x_vel = ball_data["x_vel"]
-                y_vel = ball_data["y_vel"]
-                pitch = apriltag_data["pitch"]
-                roll = apriltag_data["roll"]
+                x_dist = ball_data["x_dist"].item()
+                y_dist = ball_data["y_dist"].item()
+                x_vel = ball_data["x_vel"].item()
+                y_vel = ball_data["y_vel"].item()
+                pitch = apriltag_data["pitch"].item()
+                roll = apriltag_data["roll"].item()
                 # Update controller
                 pitch, roll, z = self.controller.update_control(
                     ball_kinematics=(x_dist, y_dist, x_vel, y_vel),
@@ -184,6 +226,13 @@ class ControllerThread(threading.Thread):
                 )
 
                 # Calculate and move servo angles
+                print(
+                    f"x_dist (2D): {x_dist:.3f}m, "
+                    f"y_dist (2D): {y_dist:.3f}m, "
+                    f"x_vel: {x_vel:.3f}m, "
+                )
+                print(f"pitch: {pitch:.3f}m, " f"roll: {roll:.3f}m, ")
+
                 self.ik.move_to_position(pitch, roll, z)
 
             time.sleep(self.dt)
@@ -207,15 +256,18 @@ def main():
     try:
         while True:
             # Main thread can still access data for visualization
-            ball_data = cam_thread.get_ball_kinematics()
-            apriltag_data = cam_thread.get_apriltag_angles()
+            frame_with_overlay = cam_thread.get_latest()
+            if frame_with_overlay is None:
+                time.sleep(0.01)
+                continue
 
-            if ball_data:
-                print(f"Ball data available: {ball_data}")
-            if apriltag_data:
-                print(f"AprilTag data available: {apriltag_data}")
-
-            time.sleep(0.1)
+            scale_percent = 50
+            width = int(frame_with_overlay.shape[1] * scale_percent / 100)
+            height = int(frame_with_overlay.shape[0] * scale_percent / 100)
+            frame_with_overlay = cv.resize(frame_with_overlay, (width, height))
+            cv.imshow("frame", frame_with_overlay)
+            if cv.waitKey(1) & 0xFF == ord("q"):
+                break
             # Add your visualization logic here
 
     except KeyboardInterrupt:
@@ -226,7 +278,7 @@ def main():
         controller_thread.join(timeout=1)
         cam_thread.join(timeout=1)
         print("[INFO] Threads stopped cleanly.")
-        cv2.destroyAllWindows()
+        cv.destroyAllWindows()
 
 
 if __name__ == "__main__":

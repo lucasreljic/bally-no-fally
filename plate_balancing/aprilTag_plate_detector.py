@@ -12,7 +12,7 @@ class AprilTagPlateDetector:
         self,
         camera_calibration_path="camera_calibration.npz",
         tag_size=0.032,
-        avg_frames=5,
+        avg_frames=8,
     ):
         """Initialize the detector with camera parameters and configuration.
 
@@ -182,7 +182,7 @@ class AprilTagPlateDetector:
                 1,
             )
 
-        return tag_positions, detected_tag_ids
+        return tag_positions, detected_tag_ids, frame
 
     def find_and_draw_plate_center(self, frame, tag_positions):
         """Find the center of the three plate tags and draw it on the frame.
@@ -244,7 +244,7 @@ class AprilTagPlateDetector:
 
     def process_frame(self, frame):
         """Process a single frame and return pitch/roll if available."""
-        tag_positions, detected_tag_ids = self.detect_tags(frame)
+        tag_positions, detected_tag_ids, frame = self.detect_tags(frame)
 
         # Check if we have current detections or can use last known positions
         ground_found = all(t in tag_positions for t in self.GROUND_TAG_IDS)
@@ -295,15 +295,21 @@ class AprilTagPlateDetector:
 
                     # Indicate if using stored positions
                     using_stored = not (ground_found and platform_found)
-                    status_msg = " (using stored positions)" if using_stored else ""
+                    # status_msg = " (using stored positions)" if using_stored else ""
 
-                    print(
-                        f"Average over last {self.avg_frames} frames → Pitch: {avg_pitch:.2f}°, Roll: {avg_roll:.2f}°{status_msg}"
-                    )
+                    # print(
+                    #     f"Average over last {self.avg_frames} frames â Pitch: {avg_pitch:.2f}Â°, Roll: {avg_roll:.2f}Â°{status_msg}"
+                    # )
                     self.frame_counter = 0
-                    return avg_pitch, avg_roll, using_stored, tag_positions
+                    return avg_pitch, avg_roll, using_stored, tag_positions, frame
 
-                return pitch, roll, not (ground_found and platform_found), tag_positions
+                return (
+                    pitch,
+                    roll,
+                    not (ground_found and platform_found),
+                    tag_positions,
+                    frame,
+                )
 
             else:
                 print(
@@ -324,7 +330,7 @@ class AprilTagPlateDetector:
                     f"Missing platform tags (no stored positions): {missing_platform}"
                 )
 
-        return None, None, False, None
+        return None, None, False, None, frame
 
     def detect_from_frame(self, frame):
         """Return averaged pitch and roll (deg) from an external camera frame."""
