@@ -17,7 +17,6 @@ from threading import Thread
 
 import cv2 as cv
 import numpy as np
-import serial
 from servo_plate_control import ServoController
 
 try:
@@ -37,10 +36,10 @@ class PIDController:
         self,
         args,
         servo_port="/dev/ttyUSB0",
-        neutral_angle=11.4,
-        kp=0.05,
-        ki=0.02,
-        kd=0.005,
+        kp=0.04,
+        ki=0.03,
+        kd=0.01,
+        min_dist=0.04,
         scale_factor=0.25,
     ):
         """Initialize controller, load config, set defaults and queues."""
@@ -64,12 +63,12 @@ class PIDController:
         self.scale_factor = scale_factor
         # Servo port name and center angle
         self.servo_port = servo_port
-        self.neutral_angle = neutral_angle
         self.servo = None
         # Controller-internal state
         self.setpoint = 0.0
         self.integral = 0.0
         self.prev_error = 0.0
+        self.min_distance = min_dist
         # Data logs for plotting results (for debugging)
         self.time_log = []
         self.position_log = []
@@ -80,18 +79,6 @@ class PIDController:
         self.position_queue = queue.Queue(maxsize=1)
         self.running = False  # Main run flag for clean shutdown
 
-    def connect_servo(self):
-        """Try to open serial connection to servo, return True if success."""
-        try:
-            self.servo = serial.Serial(self.servo_port, 9600, timeout=0.5)
-            time.sleep(1.5)
-            print("[SERVO] Connected")
-            return True
-        except Exception as e:
-            print(f"[SERVO] Connection Failed: {e}")
-            self.servo = None
-            return False
-
     def set_servo_pos(self, pos):
         """Set servo angle based on normalized position (-1 to 1)."""
         if not self.servo:
@@ -100,16 +87,6 @@ class PIDController:
 
         self.servo.set_position_normalized(position)
         return
-
-    def send_servo_angle(self, angle):
-        """Send angle command to servo motor (clipped for safety)."""
-        if not self.servo:
-            return
-        servo_angle = int(np.clip(self.neutral_angle + angle, 0, 30))
-        try:
-            self.servo.write(bytes([servo_angle]))
-        except Exception:
-            print("[SERVO] Send failed")
 
     def update_pid(self, position, dt=0.033):
         """Perform PID calculation and return control output."""
@@ -174,7 +151,9 @@ class PIDController:
 
             if found and distance_to_tag:
                 # Convert normalized to meters using scale
-                position_m = (distance_to_tag - 0.04) - self.length_beam / 2
+                position_m = (
+                    distance_to_tag - self.min_distance
+                ) - self.length_beam / 2
                 # Always keep latest measurement only
                 try:
                     if self.position_queue.full():
@@ -217,13 +196,25 @@ class PIDController:
         """Runs PID control loop in parallel with GUI and camera."""
         # if not self.connect_servo():
         #     print("[ERROR] No servo - running in simulation mode")
+        self.servo_arr = []
         if not self.servo:
-            self.servo = ServoController(
-                config_file=f"plate_balancing/servo_{str(self.servo_name)}.json"
+            self.servo_arr.append(
+                ServoController(config_file="plate_balancing/servo_0.json")
             )
+            self.servo_arr.append(
+                ServoController(config_file="plate_balancing/servo_1.json")
+            )
+            self.servo_arr.append(
+                ServoController(config_file="plate_balancing/servo_2.json")
+            )
+            self.servo = self.servo_arr[self.servo_name]
             print(
-                f"[SERVO] Using servo config: plate_balancing/servo_{str(self.servo_name)}.json"
+                f"[SERVO] Controlled servo config: plate_balancing/servo_{str(self.servo_name)}.json"
             )
+            self.servo_arr[0].set_position_normalized(0)
+            self.servo_arr[1].set_position_normalized(0)
+            self.servo_arr[2].set_position_normalized(0)
+
         self.start_time = time.time()
         while self.running:
             try:
@@ -245,11 +236,13 @@ class PIDController:
             except Exception as e:
                 print(f"[CONTROL] Error: {e}")
                 break
-        if self.servo:
-            self.servo.set_position_normalized(0)
-            self.servo.cleanup()
+        if len(self.servo_arr) > 0:
+            for i in self.servo_arr:
+                self.servo_arr[i].set_position_normalized(0)
+
+                self.servo_arr[i].cleanup()
+
             # Return to neutral on exit
-            # self.send_servo_angle(0)
             # self.servo.close()
 
     def stop(self):
@@ -257,7 +250,8 @@ class PIDController:
         self.running = False
         # Try to safely close all windows/resources
         try:
-            self.servo.cleanup()
+            for i in self.servo_arr:
+                self.servo_arr[i].cleanup()
             self.root.quit()
             self.root.destroy()
         except Exception:
@@ -301,7 +295,19 @@ if __name__ == "__main__":
             default=5,
             help="Tag number to track",
         )
-        controller = PIDController(parser.parse_args())
+        k_p = [0.04, 0.04, 0.04]
+        k_i = [0.03, 0.03, 0.03]
+        k_d = [0.01, 0.01, 0.01]
+        min_distance = [0.03, 0.02, 0.02]
+
+        num = 5 - parser.parse_args().tag_num
+        controller = PIDController(
+            parser.parse_args(),
+            kp=k_p[num],
+            ki=k_i[num],
+            kd=k_d[num],
+            min_dist=min_distance[num],
+        )
         controller.run()
     except FileNotFoundError:
         print("[ERROR] config.json not found. Run simple_autocal.py first.")
