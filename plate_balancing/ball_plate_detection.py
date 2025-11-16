@@ -219,12 +219,55 @@ class BallDetector:
 
         return (x, y, z)
 
-    def detect_ball(self, frame, apriltag_position=None):
+    def _calculate_3d_position_with_reference(self, center_px, radius_px, center_3d):
+        """Calculate ball position using AprilTag as reference frame."""
+        if center_3d is None or self.camera_matrix is None:
+            return self._calculate_3d_position(center_px, radius_px)
+
+        # Get AprilTag 3D position
+        # print(apriltag_position)
+        tag_z = center_3d[2]
+
+        # Use AprilTag Z-distance as reference depth
+        # Assume ball is approximately at the same depth as the tag
+        estimated_z = tag_z
+
+        # Calculate ball position using pinhole projection at estimated depth
+        x_px, y_px = center_px
+
+        # Apply distortion correction
+        if self.dist_coeffs is not None and np.any(np.abs(self.dist_coeffs) > 1e-6):
+            points = np.array([[[x_px, y_px]]], dtype=np.float32)
+            undistorted = cv2.undistortPoints(
+                points, self.camera_matrix, self.dist_coeffs, P=self.camera_matrix
+            )
+            x_px, y_px = undistorted[0, 0]
+
+        # Calculate X,Y using the reference Z depth
+        ball_x = (x_px - self.cx) * estimated_z / self.fx
+        ball_y = (y_px - self.cy) * estimated_z / self.fy
+
+        # Fine-tune Z using ball size constraint
+        ball_radius_m = self.ball_diameter_m / 2
+        focal_length = np.sqrt(self.fx * self.fy)
+        size_based_z = (ball_radius_m * focal_length) / radius_px
+
+        # Blend the two Z estimates (favor reference depth but adjust with size)
+        alpha = 0.7  # Weight for reference depth
+        final_z = alpha * estimated_z + (1 - alpha) * size_based_z
+
+        # Recalculate X,Y with refined Z
+        ball_x = (x_px - self.cx) * final_z / self.fx
+        ball_y = (y_px - self.cy) * final_z / self.fy
+
+        return (ball_x, ball_y, final_z)
+
+    def detect_ball(self, frame, center_3d=None):
         """Detect ball in frame and return detection results.
 
         Args:
             frame: Input BGR image frame
-            apriltag_position (dict, optional): AprilTag pose data with keys:
+            center_3d (tuple, optional): 3D position of AprilTag center (x, y, z) in meters
                 - 'x': x position in meters (camera frame)
                 - 'y': y position in meters (camera frame)
                 - 'z': z position in meters (camera frame)
@@ -285,8 +328,11 @@ class BallDetector:
             return False, None, None, (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)
 
         # Calculate 3D position using camera intrinsics and known ball size
-        position_3d = self._calculate_3d_position((x, y), radius)
+        position_3d = self._calculate_3d_position_with_reference(
+            (x, y), radius, center_3d
+        )
         if position_3d is None:
+            print("3d pose is none")
             # Fallback to old 2D method if no camera calibration
             center_x = frame.shape[1] // 2
             center_y = frame.shape[0] // 2

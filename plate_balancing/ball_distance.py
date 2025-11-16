@@ -179,8 +179,8 @@ class BallDistanceCalculator:
         center_to_ball_2d = ball_2d - center_2d
 
         # Calculate distances along plate axes
-        x_distance = np.dot(center_to_ball_2d, x_axis_2d)
-        y_distance = np.dot(center_to_ball_2d, y_axis_2d)
+        x_distance = np.dot(center_to_ball_2d - 0.00, x_axis_2d)
+        y_distance = np.dot(center_to_ball_2d - 0.00, y_axis_2d)
         total_distance_2d = np.linalg.norm(center_to_ball_2d)
 
         # Calculate angle between center-tag5 direction and center-ball direction
@@ -204,7 +204,7 @@ class BallDistanceCalculator:
             "total_velocity_2d": total_velocity_2d,  # 2D velocity magnitude
         }
 
-    def process_frame(self, frame, tag_positions, ball_data=None):
+    def process_frame(self, frame, tag_positions, plate_center_3d, ball_data=None):
         """Process frame to detect ball and calculate all distances/angles.
 
         Args:
@@ -217,9 +217,7 @@ class BallDistanceCalculator:
         """
         # Get detected tag IDs from tag_positions
         detected_tag_ids = set(tag_positions.keys())
-        plate_center_2d = self.tag_detector.find_and_draw_plate_center(
-            frame, tag_positions
-        )
+        plate_center_2d = self.tag_detector.find_2D_plate_center(plate_center_3d)
 
         # Get ball detection results
         ball_found = ball_data["ball_found"] if ball_data else False
@@ -254,23 +252,17 @@ class BallDistanceCalculator:
                 results["error_message"] = "Tag 5 not detected and no stored position"
                 return results
 
-        # Calculate plate center in 3D
-        available_platform_tags = []
-        for tag_id in self.tag_detector.PLATFORM_TAG_IDS:
-            if tag_id in tag_positions:
-                available_platform_tags.append(tag_positions[tag_id])
-            elif tag_id in self.tag_detector.last_known_positions:
-                available_platform_tags.append(
-                    self.tag_detector.last_known_positions[tag_id]
-                )
-
-        if len(available_platform_tags) < 3:
+        if plate_center_3d is None:
             results[
                 "error_message"
             ] = "Insufficient platform tags for center calculation"
             return results
 
-        plate_center_3d = np.mean(available_platform_tags, axis=0)
+        print(
+            f"tags;  x: {plate_center_3d[0]:.3f}m, "
+            f"y: {plate_center_3d[1]:.3f}m, "
+            f"z: {plate_center_3d[2]:.3f}m, "
+        )
         tag5_pos_3d = tag_positions[5]
 
         # Calculate all distances and angles (2D only)
@@ -353,9 +345,11 @@ class BallDistanceCalculator:
             info_texts = [
                 f"Ball to Center (2D): {distances['ball_to_center_2d']:.3f}m",
                 f"Ball to Tag5 (2D): {distances['ball_to_tag5_2d']:.3f}m",
+                f"Ball (3D): {distances['ball_pos_3d'][2]:.3f}m",
+                f"Tag5 (3D): {distances['tag5_pos_3d'][2]:.3f}m",
                 f"X Distance: {xy_analysis['x_distance']:.3f}m",
                 f"Y Distance: {xy_analysis['y_distance']:.3f}m",
-                f"Angle: {xy_analysis['angle_degrees']:.1f}Â°",
+                f"Angle: {xy_analysis['angle_degrees']:.1f}°",
             ]
 
             for i, text in enumerate(info_texts):
@@ -431,7 +425,7 @@ class BallDistanceCalculator:
                         f"Ball-Tag5 (2D): {distances['ball_to_tag5_2d']:.3f}m, "
                         f"X: {xy_analysis['x_distance']:.3f}m, "
                         f"Y: {xy_analysis['y_distance']:.3f}m, "
-                        f"Angle: {xy_analysis['angle_degrees']:.1f}Â°"
+                        f"Angle: {xy_analysis['angle_degrees']:.1f}°"
                     )
 
                 # Show frame

@@ -46,6 +46,11 @@ class AprilTagPlateDetector:
         self.roll_values = []
         self.frame_counter = 0
 
+        # Ground tag calibration
+        self.ground_calibrated = False
+        self.ground_calibration_frames = []
+        self.stored_ground_positions = {}
+
     def _load_camera_calibration(self, npz_path):
         """Load camera calibration parameters from file."""
         try:
@@ -184,7 +189,26 @@ class AprilTagPlateDetector:
 
         return tag_positions, detected_tag_ids, frame
 
-    def find_and_draw_plate_center(self, frame, tag_positions):
+    def find_2D_plate_center(self, center_3d):
+        """Find the center of the three plate tags and draw it on the frame.
+
+        Args:
+            center_3d: The 3D coordinates of the center point
+        Returns:
+            center_2d: The 2D coordinates of the center point, or None if not all tags available
+        """
+        # Project the 3D center point to 2D image coordinates
+        fx, fy, cx, cy = self.camera_params
+
+        # Simple perspective projection
+        if center_3d[2] > 0:  # Make sure the point is in front of the camera
+            u = fx * (center_3d[0] / center_3d[2]) + cx
+            v = fy * (center_3d[1] / center_3d[2]) + cy
+            center_2d = (int(u), int(v))
+            return center_2d
+        return None
+
+    def draw_plate_center(self, frame, center_3d):
         """Find the center of the three plate tags and draw it on the frame.
 
         Args:
@@ -193,6 +217,36 @@ class AprilTagPlateDetector:
 
         Returns:
             center_2d: The 2D pixel coordinates of the center point, or None if not all tags available
+        """
+        center_2d = self.find_2D_plate_center(center_3d)
+        if center_2d is not None:
+            # Draw the center point on the frame
+            cv2.circle(frame, center_2d, 8, (255, 0, 0), -1)  # Blue filled circle
+            cv2.circle(frame, center_2d, 12, (255, 255, 255), 2)  # White outer ring
+
+            # Add text label
+            cv2.putText(
+                frame,
+                "Plate Center",
+                (center_2d[0] - 40, center_2d[1] - 20),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+            )
+
+            return center_2d
+
+        return None
+
+    def find_plate_center(self, tag_positions):
+        """Find the center of the three plate tags.
+
+        Args:
+            tag_positions: Dictionary of detected tag positions in 3D space
+
+        Returns:
+            center_3d: The 3D coordinates of the center point, or None if not all tags available
         """
         # Check if all platform tags are available (either detected or from last known positions)
         available_platform_tags = []
@@ -214,62 +268,72 @@ class AprilTagPlateDetector:
             # Calculate the center point in 3D space
             center_3d = np.mean(plate_positions_3d, axis=0)
 
-            # Project the 3D center point to 2D image coordinates
-            fx, fy, cx, cy = self.camera_params
-
-            # Simple perspective projection
-            if center_3d[2] > 0:  # Make sure the point is in front of the camera
-                u = fx * (center_3d[0] / center_3d[2]) + cx
-                v = fy * (center_3d[1] / center_3d[2]) + cy
-                center_2d = (int(u), int(v))
-
-                # Draw the center point on the frame
-                cv2.circle(frame, center_2d, 8, (255, 0, 0), -1)  # Blue filled circle
-                cv2.circle(frame, center_2d, 12, (255, 255, 255), 2)  # White outer ring
-
-                # Add text label
-                cv2.putText(
-                    frame,
-                    "Plate Center",
-                    (center_2d[0] - 40, center_2d[1] - 20),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    2,
-                )
-
-                return center_2d
+            return center_3d
 
         return None
 
+    def calibrate_ground_tags(self, tag_positions):
+        """Collect ground tag positions during startup for calibration."""
+        # Check if all ground tags are detected in current frame
+        if all(t in tag_positions for t in self.GROUND_TAG_IDS):
+            ground_frame_data = {
+                t: tag_positions[t].copy() for t in self.GROUND_TAG_IDS
+            }
+            self.ground_calibration_frames.append(ground_frame_data)
+
+            print(
+                f"Ground calibration: {len(self.ground_calibration_frames)}/{self.avg_frames} frames collected"
+            )
+
+            # If we have enough frames, compute average and mark as calibrated
+            if len(self.ground_calibration_frames) >= self.avg_frames:
+                for tag_id in self.GROUND_TAG_IDS:
+                    positions = [
+                        frame_data[tag_id]
+                        for frame_data in self.ground_calibration_frames
+                    ]
+                    self.stored_ground_positions[tag_id] = np.mean(positions, axis=0)
+
+                self.ground_calibrated = True
+                print("Ground tag calibration completed!")
+                print(f"Stored ground positions: {self.stored_ground_positions}")
+                return True
+        else:
+            missing_tags = [t for t in self.GROUND_TAG_IDS if t not in tag_positions]
+            print(f"Ground calibration waiting for tags: {missing_tags}")
+
+        return False
+
     def process_frame(self, frame):
         """Process a single frame and return pitch/roll if available."""
-        tag_positions, detected_tag_ids, frame = self.detect_tags(frame)
+        tag_positions, _, frame = self.detect_tags(frame)
 
-        # Check if we have current detections or can use last known positions
-        ground_found = all(t in tag_positions for t in self.GROUND_TAG_IDS)
+        # If ground not calibrated yet, try to calibrate
+        if not self.ground_calibrated:
+            self.calibrate_ground_tags(tag_positions)
+            return None, None, False, None, frame
+
+        # Use stored ground positions instead of current detections
+        complete_tag_positions = tag_positions.copy()
+        for tag_id in self.GROUND_TAG_IDS:
+            complete_tag_positions[tag_id] = self.stored_ground_positions[tag_id]
+
+        # Check platform tag availability
         platform_found = all(t in tag_positions for t in self.PLATFORM_TAG_IDS)
-
-        # If some tags are missing but we have last known positions, use them
-        ground_available = all(
-            t in tag_positions or t in self.last_known_positions
-            for t in self.GROUND_TAG_IDS
-        )
         platform_available = all(
             t in tag_positions or t in self.last_known_positions
             for t in self.PLATFORM_TAG_IDS
         )
 
-        # Fill in missing tags with last known positions
-        complete_tag_positions = tag_positions.copy()
-        for tag_id in self.GROUND_TAG_IDS + self.PLATFORM_TAG_IDS:
+        # Fill in missing platform tags with last known positions
+        for tag_id in self.PLATFORM_TAG_IDS:
             if (
                 tag_id not in complete_tag_positions
                 and tag_id in self.last_known_positions
             ):
                 complete_tag_positions[tag_id] = self.last_known_positions[tag_id]
 
-        if ground_available and platform_available:
+        if platform_available:
             ground_pts = [complete_tag_positions[t] for t in self.GROUND_TAG_IDS]
             plate_pts = [complete_tag_positions[t] for t in self.PLATFORM_TAG_IDS]
 
@@ -293,20 +357,15 @@ class AprilTagPlateDetector:
                     avg_pitch = np.mean(self.pitch_values[-self.avg_frames :])
                     avg_roll = np.mean(self.roll_values[-self.avg_frames :])
 
-                    # Indicate if using stored positions
-                    using_stored = not (ground_found and platform_found)
-                    # status_msg = " (using stored positions)" if using_stored else ""
-
-                    # print(
-                    #     f"Average over last {self.avg_frames} frames â Pitch: {avg_pitch:.2f}Â°, Roll: {avg_roll:.2f}Â°{status_msg}"
-                    # )
+                    # Indicate if using stored positions for platform
+                    using_stored = not platform_found
                     self.frame_counter = 0
                     return avg_pitch, avg_roll, using_stored, tag_positions, frame
 
                 return (
                     pitch,
                     roll,
-                    not (ground_found and platform_found),
+                    not platform_found,
                     tag_positions,
                     frame,
                 )
@@ -316,19 +375,10 @@ class AprilTagPlateDetector:
                     "Could not compute one of the plane normals (points nearly collinear)."
                 )
         else:
-            missing_ground = [
-                t for t in self.GROUND_TAG_IDS if t not in complete_tag_positions
-            ]
             missing_platform = [
                 t for t in self.PLATFORM_TAG_IDS if t not in complete_tag_positions
             ]
-
-            if missing_ground:
-                print(f"Missing ground tags (no stored positions): {missing_ground}")
-            if missing_platform:
-                print(
-                    f"Missing platform tags (no stored positions): {missing_platform}"
-                )
+            print(f"Missing platform tags (no stored positions): {missing_platform}")
 
         return None, None, False, None, frame
 

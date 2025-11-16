@@ -28,7 +28,7 @@ class CameraThread(threading.Thread):
         self.cap.set(cv.CAP_PROP_BUFFERSIZE, 1)
         self.cap.set(cv.CAP_PROP_FPS, 30)
         self.ball_detector = BallDetector()
-        self.tag_detector = AprilTagPlateDetector()
+        self.tag_detector = AprilTagPlateDetector(avg_frames=4)
         self.ball_distance_calc = BallDistanceCalculator(
             detector=self.tag_detector, ball_det=self.ball_detector
         )
@@ -52,15 +52,18 @@ class CameraThread(threading.Thread):
                 used_previous,
                 tag_positions,
                 vis_frame,
+                center_3d,
             ) = self.detect_apriltags(frame)
             if pitch is not None and roll is not None:
                 self._put_in_queue(
                     self.apriltag_angles_queue,
                     {"pitch": pitch, "roll": roll, "used_previous": used_previous},
                 )
+            if center_3d is not None:
+                self.tag_detector.draw_plate_center(frame, center_3d)
             # --- Ball detection ---
             ball_data, raw_ball_data = self.detect_ball(
-                frame, apriltag_position=tag_positions
+                frame, center_3d=center_3d, apriltag_position=tag_positions
             )
             if ball_data is not None:
                 self._put_in_queue(self.ball_kinematics_queue, ball_data)
@@ -77,7 +80,7 @@ class CameraThread(threading.Thread):
                     pass
             self.frames.put(frame)
 
-    def detect_ball(self, frame, apriltag_position=None):
+    def detect_ball(self, frame, center_3d=None, apriltag_position=None):
         """Detect the ball in the frame.
 
         Args:
@@ -94,7 +97,7 @@ class CameraThread(threading.Thread):
             radius,
             position_m,
             filtered_vel,
-        ) = self.ball_detector.detect_ball(frame, apriltag_position=apriltag_position)
+        ) = self.ball_detector.detect_ball(frame, center_3d=center_3d)
         ball_data = {
             "ball_found": found,
             "center": center,
@@ -102,10 +105,17 @@ class CameraThread(threading.Thread):
             "position_m": position_m,
             "filtered_vel": filtered_vel,
         }
+
         if found and apriltag_position is not None:
+            print(
+                f"ball;  x: {position_m[0]:.3f}m, "
+                f"y: {position_m[1]:.3f}m, "
+                f"z: {position_m[2]:.3f}m, "
+            )
+
             # print(ball_data["position_m"])
             results = self.ball_distance_calc.process_frame(
-                frame, apriltag_position, ball_data=ball_data
+                frame, apriltag_position, center_3d, ball_data=ball_data
             )
             if "error_message" in results:
                 print(f"Ball distance error: {results['error_message']}")
@@ -141,10 +151,11 @@ class CameraThread(threading.Thread):
             tag_positions,
             vis_frame,
         ) = self.tag_detector.process_frame(frame)
+        center_3d = self.tag_detector.find_plate_center(tag_positions)
         if pitch is not None and roll is not None:
-            return pitch, roll, used_previous, tag_positions, vis_frame
+            return pitch, roll, used_previous, tag_positions, vis_frame, center_3d
 
-        return None, None, False, None, frame
+        return None, None, False, None, frame, None
 
     def _put_in_queue(self, queue_obj, data):
         """Put data in queue, dropping old data if queue is full."""
@@ -187,7 +198,7 @@ class CameraThread(threading.Thread):
 class ControllerThread(threading.Thread):
     """Threaded controller for plate balancing."""
 
-    def __init__(self, camera_thread, ik_solver, dt=0.03):
+    def __init__(self, camera_thread, ik_solver, dt=0.033):
         """Initialize the controller thread.
 
         Args:
@@ -226,12 +237,12 @@ class ControllerThread(threading.Thread):
                 )
 
                 # Calculate and move servo angles
-                print(
-                    f"x_dist (2D): {x_dist:.3f}m, "
-                    f"y_dist (2D): {y_dist:.3f}m, "
-                    f"x_vel: {x_vel:.3f}m, "
-                )
-                print(f"pitch: {pitch:.3f}m, " f"roll: {roll:.3f}m, ")
+                # print(
+                #     f"x_dist (2D): {x_dist:.3f}m, "
+                #     f"y_dist (2D): {y_dist:.3f}m, "
+                #     f"x_vel: {x_vel:.3f}m, "
+                # )
+                # print(f"pitch: {pitch:.3f}m, " f"roll: {roll:.3f}m, ")
 
                 self.ik.move_to_position(pitch, roll, z)
 

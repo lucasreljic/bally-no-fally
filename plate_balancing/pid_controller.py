@@ -8,6 +8,7 @@ This module:
   until the error is within a deadband.
 """
 
+import math
 import time
 
 import numpy as np
@@ -34,7 +35,7 @@ class PIDController:
         self.prev_error = 0.0
         self.last_time = None
 
-    def update_pid(self, setpoint, position, dt=None):
+    def update_pid(self, setpoint, position, dt=None, vel_control=False, pos_scaler=1):
         """Perform PID calculation and return control output."""
         error = setpoint - position
         if abs(error) < 0.0002:
@@ -59,7 +60,8 @@ class PIDController:
 
         # Derivative term calculation
         derivative = (error - self.prev_error) / dt if dt > 0 else 0
-        D_val = self.Kd * derivative
+
+        D_val = self.Kd * pos_scaler * derivative
 
         # PID output (limit to safe beam range)
         output = P_val + I_val + D_val
@@ -82,40 +84,53 @@ class StewartPlatformController:
     def __init__(self, scale_factor=0.25):
         """Initialize Stewart Platform Controller."""
         # Outer loop (position PI)
-        self.pi_x = PIDController(Kp=110.6, Ki=6.9)
-        self.pi_y = PIDController(Kp=110.6, Ki=6.9)
+        self.pi_x = PIDController(Kp=110.6, Ki=5.9)
+        self.pi_y = PIDController(Kp=110.6, Ki=5.9)
         # Middle loop (velocity PD)
-        self.pd_vx = PIDController(Kp=1.5, Kd=2.5)
-        self.pd_vy = PIDController(Kp=1.5, Kd=2.5)
+        self.pd_vx = PIDController(Kp=1.0, Kd=1.5)
+        self.pd_vy = PIDController(Kp=1.0, Kd=1.5)
 
         # Inner loop (plate PID)
-        self.pid_pitch = PIDController(Kp=1.0, Ki=0.0, Kd=0.00)
-        self.pid_roll = PIDController(Kp=1.0, Ki=0.0, Kd=0.00)
+        self.pid_pitch = PIDController(Kp=1.0, Ki=0.00, Kd=0.0)
+        self.pid_roll = PIDController(Kp=1.0, Ki=0.00, Kd=0.0)
 
         # Targets
-        self.ball_setpoint = np.array([0.0, 0.0])
+        self.ball_setpoint = np.array([0.00, 0.0])
         self.vel_setpoint = np.array([0.0, 0.0])
         self.z_setpoint = 0.0
 
         # Linear acceleration to angle mapping
         self.g = 9.81
-        self.a_to_angle_factor = (5.0 / 7.0) * self.g
+        self.a_to_angle_factor = (3.0 / 5.0) * self.g
         # Target ball position (x, y)
 
-    def update_control(self, ball_kinematics, plate_pitch, plate_roll, dt=0.02):
+    def update_control(self, ball_kinematics, plate_pitch, plate_roll, dt=0.03):
         """Main PID control loop for Stewart Platform."""
         # Predict + update position and velocity
 
         est_x, est_y, est_vx, est_vy = ball_kinematics
+        # est_x = est_x + est_vx * dt
+        # est_y = est_y + est_vy * dt
+
         # Outer loop (Position PI)
         vx_set = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
         vy_set = self.pi_y.update_pid(self.ball_setpoint[1], est_y, dt)
 
         # Middle loop (Velocity PD)
-        roll_acc = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
-        pitch_acc = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
+        roll_acc = 0
+        pitch_acc = 0
+        if math.sqrt(est_vx**2 + est_vy**2) < 0.05:
+            roll_acc = self.pd_vx.update_pid(
+                self.vel_setpoint[0] + vx_set, est_vx, dt, pos_scaler=1.0
+            )
+            pitch_acc = self.pd_vy.update_pid(
+                self.vel_setpoint[1] + vy_set, est_vy, dt, pos_scaler=1.0
+            )
+        else:
+            roll_acc = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
+            pitch_acc = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
 
-        print(pitch_acc)
+        # print(pitch_acc)
         # Map acceleration to linear angles
         pitch_des = np.degrees(
             np.arcsin(np.clip(pitch_acc / self.a_to_angle_factor, -1, 1))
