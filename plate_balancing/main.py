@@ -107,11 +107,11 @@ class CameraThread(threading.Thread):
         }
 
         if found and apriltag_position is not None:
-            print(
-                f"ball;  x: {position_m[0]:.3f}m, "
-                f"y: {position_m[1]:.3f}m, "
-                f"z: {position_m[2]:.3f}m, "
-            )
+            # print(
+            #     f"ball;  x: {position_m[0]:.3f}m, "
+            #     f"y: {position_m[1]:.3f}m, "
+            #     f"z: {position_m[2]:.3f}m, "
+            # )
 
             # print(ball_data["position_m"])
             results = self.ball_distance_calc.process_frame(
@@ -151,8 +151,8 @@ class CameraThread(threading.Thread):
             tag_positions,
             vis_frame,
         ) = self.tag_detector.process_frame(frame)
-        center_3d = self.tag_detector.find_plate_center(tag_positions)
         if pitch is not None and roll is not None:
+            center_3d = self.tag_detector.find_plate_center(tag_positions)
             return pitch, roll, used_previous, tag_positions, vis_frame, center_3d
 
         return None, None, False, None, frame, None

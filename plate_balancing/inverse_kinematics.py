@@ -68,7 +68,7 @@ class InverseKinematics:
         Returns: list of 3 servo angles in degrees
         """
         # Convert angles to radians
-        pitch = math.radians(pitch)
+        pitch = np.deg2rad(pitch)
         roll = np.deg2rad(roll)
 
         # Create rotation matrices

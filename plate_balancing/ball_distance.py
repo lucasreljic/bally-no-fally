@@ -258,11 +258,11 @@ class BallDistanceCalculator:
             ] = "Insufficient platform tags for center calculation"
             return results
 
-        print(
-            f"tags;  x: {plate_center_3d[0]:.3f}m, "
-            f"y: {plate_center_3d[1]:.3f}m, "
-            f"z: {plate_center_3d[2]:.3f}m, "
-        )
+        # print(
+        #     f"tags;  x: {plate_center_3d[0]:.3f}m, "
+        #     f"y: {plate_center_3d[1]:.3f}m, "
+        #     f"z: {plate_center_3d[2]:.3f}m, "
+        # )
         tag5_pos_3d = tag_positions[5]
 
         # Calculate all distances and angles (2D only)

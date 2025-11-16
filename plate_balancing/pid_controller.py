@@ -35,10 +35,19 @@ class PIDController:
         self.prev_error = 0.0
         self.last_time = None
 
-    def update_pid(self, setpoint, position, dt=None, vel_control=False, pos_scaler=1):
+    def update_pid(
+        self,
+        setpoint,
+        position,
+        dt=None,
+        vel_control=False,
+        pos_scaler=1,
+        deadband=0.014,
+        integral_term=True,
+    ):
         """Perform PID calculation and return control output."""
         error = setpoint - position
-        if abs(error) < 0.0002:
+        if abs(error) < deadband:
             error = 0
         error = error * self.scale_factor  # Scale error for easier tuning (if needed)
 
@@ -54,7 +63,7 @@ class PIDController:
         P_val = self.Kp * error
 
         # Integral term accumulation
-        if dt > 0:
+        if dt > 0 and integral_term:
             self.integral += error * dt
         I_val = self.Ki * self.integral
 
@@ -84,15 +93,15 @@ class StewartPlatformController:
     def __init__(self, scale_factor=0.25):
         """Initialize Stewart Platform Controller."""
         # Outer loop (position PI)
-        self.pi_x = PIDController(Kp=110.6, Ki=5.9)
-        self.pi_y = PIDController(Kp=110.6, Ki=5.9)
+        self.pi_x = PIDController(Kp=196.6, Ki=0.0)
+        self.pi_y = PIDController(Kp=196.6, Ki=0.0)
         # Middle loop (velocity PD)
-        self.pd_vx = PIDController(Kp=1.0, Kd=1.5)
-        self.pd_vy = PIDController(Kp=1.0, Kd=1.5)
+        self.pd_vx = PIDController(Kp=1.0, Kd=1.9)
+        self.pd_vy = PIDController(Kp=1.0, Kd=1.9)
 
         # Inner loop (plate PID)
-        self.pid_pitch = PIDController(Kp=1.0, Ki=0.00, Kd=0.0)
-        self.pid_roll = PIDController(Kp=1.0, Ki=0.00, Kd=0.0)
+        self.pid_pitch = PIDController(Kp=0.5, Ki=0.25, Kd=0.0)
+        self.pid_roll = PIDController(Kp=0.5, Ki=0.25, Kd=0.0)
 
         # Targets
         self.ball_setpoint = np.array([0.00, 0.0])
@@ -109,8 +118,8 @@ class StewartPlatformController:
         # Predict + update position and velocity
 
         est_x, est_y, est_vx, est_vy = ball_kinematics
-        # est_x = est_x + est_vx * dt
-        # est_y = est_y + est_vy * dt
+        est_x = est_x + est_vx * dt
+        est_y = est_y + est_vy * dt
 
         # Outer loop (Position PI)
         vx_set = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
@@ -121,16 +130,15 @@ class StewartPlatformController:
         pitch_acc = 0
         if math.sqrt(est_vx**2 + est_vy**2) < 0.05:
             roll_acc = self.pd_vx.update_pid(
-                self.vel_setpoint[0] + vx_set, est_vx, dt, pos_scaler=1.0
+                self.vel_setpoint[0] + vx_set, est_vx, dt, pos_scaler=0.5
             )
             pitch_acc = self.pd_vy.update_pid(
-                self.vel_setpoint[1] + vy_set, est_vy, dt, pos_scaler=1.0
+                self.vel_setpoint[1] + vy_set, est_vy, dt, pos_scaler=0.5
             )
         else:
             roll_acc = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
             pitch_acc = self.pd_vy.update_pid(self.vel_setpoint[1] + vy_set, est_vy, dt)
 
-        # print(pitch_acc)
         # Map acceleration to linear angles
         pitch_des = np.degrees(
             np.arcsin(np.clip(pitch_acc / self.a_to_angle_factor, -1, 1))
@@ -139,9 +147,17 @@ class StewartPlatformController:
             np.arcsin(np.clip(roll_acc / self.a_to_angle_factor, -1, 1))
         )
 
+        print(f"pitch (2D): {abs(pitch_des- plate_pitch):.3f}, ")
         # Inner loop (Plate orientation PID)
-        pitch_out = self.pid_pitch.update_pid(pitch_des, plate_pitch, dt)
-        roll_out = self.pid_roll.update_pid(roll_des, plate_roll, dt)
+        integral_plate = True
+        if math.sqrt(est_x**2 + est_y**2) < 0.014:
+            integral_plate = False
+        pitch_out = self.pid_pitch.update_pid(
+            pitch_des, plate_pitch, dt, deadband=0.5, integral_term=integral_plate
+        )
+        roll_out = self.pid_roll.update_pid(
+            roll_des, plate_roll, dt, deadband=0.5, integral_term=integral_plate
+        )
 
         # Z-axis offset
         z_out = self.z_setpoint
