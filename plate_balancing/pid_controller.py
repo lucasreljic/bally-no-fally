@@ -41,8 +41,9 @@ class PIDController:
         position,
         dt=None,
         vel_control=False,
-        pos_scaler=1,
-        deadband=0.014,
+        p_scaler=1,
+        d_scaler=1,
+        deadband=0.012,
         integral_term=True,
     ):
         """Perform PID calculation and return control output."""
@@ -60,7 +61,7 @@ class PIDController:
             dt = current_time - self.last_time
 
         # Proportional term
-        P_val = self.Kp * error
+        P_val = self.Kp * error * p_scaler
 
         # Integral term accumulation
         if dt > 0 and integral_term:
@@ -70,7 +71,7 @@ class PIDController:
         # Derivative term calculation
         derivative = (error - self.prev_error) / dt if dt > 0 else 0
 
-        D_val = self.Kd * pos_scaler * derivative
+        D_val = self.Kd * d_scaler * derivative
 
         # PID output (limit to safe beam range)
         output = P_val + I_val + D_val
@@ -93,20 +94,21 @@ class StewartPlatformController:
     def __init__(self, scale_factor=0.25):
         """Initialize Stewart Platform Controller."""
         # Outer loop (position PI)
-        self.pi_x = PIDController(Kp=196.6, Ki=0.0)
-        self.pi_y = PIDController(Kp=196.6, Ki=0.0)
+        self.pi_x = PIDController(Kp=25.6, Ki=5.0)
+        self.pi_y = PIDController(Kp=25.6, Ki=5.0)
         # Middle loop (velocity PD)
-        self.pd_vx = PIDController(Kp=1.0, Kd=1.9)
-        self.pd_vy = PIDController(Kp=1.0, Kd=1.9)
+        self.pd_vx = PIDController(Kp=1.2, Kd=1.8)
+        self.pd_vy = PIDController(Kp=1.2, Kd=1.8)
 
         # Inner loop (plate PID)
-        self.pid_pitch = PIDController(Kp=0.5, Ki=0.25, Kd=0.0)
-        self.pid_roll = PIDController(Kp=0.5, Ki=0.25, Kd=0.0)
+        self.pid_pitch = PIDController(Kp=0.45, Ki=0.25, Kd=0.0)
+        self.pid_roll = PIDController(Kp=0.45, Ki=0.25, Kd=0.0)
 
         # Targets
         self.ball_setpoint = np.array([0.00, 0.0])
-        self.vel_setpoint = np.array([0.0, 0.0])
+        self.vel_setpoint = np.array([0.00, 0.0])
         self.z_setpoint = 0.0
+        self.time = 0.0
 
         # Linear acceleration to angle mapping
         self.g = 9.81
@@ -122,18 +124,37 @@ class StewartPlatformController:
         est_y = est_y + est_vy * dt
 
         # Outer loop (Position PI)
-        vx_set = self.pi_x.update_pid(self.ball_setpoint[0], est_x, dt)
-        vy_set = self.pi_y.update_pid(self.ball_setpoint[1], est_y, dt)
+        pos_scaler_term = 1
+        if (
+            math.sqrt(
+                (est_x - self.ball_setpoint[0]) ** 2
+                + (est_y - self.ball_setpoint[1]) ** 2
+            )
+            < 0.03
+        ):
+            pos_scaler_term = 0.5
+        vx_set = self.pi_x.update_pid(
+            self.ball_setpoint[0], est_x, dt, p_scaler=pos_scaler_term
+        )
+        vy_set = self.pi_y.update_pid(
+            self.ball_setpoint[1], est_y, dt, p_scaler=pos_scaler_term
+        )
 
         # Middle loop (Velocity PD)
         roll_acc = 0
         pitch_acc = 0
-        if math.sqrt(est_vx**2 + est_vy**2) < 0.05:
+        if (
+            math.sqrt(
+                (est_vx - self.vel_setpoint[0]) ** 2
+                + (est_vy - self.vel_setpoint[1]) ** 2
+            )
+            < 0.03
+        ):
             roll_acc = self.pd_vx.update_pid(
-                self.vel_setpoint[0] + vx_set, est_vx, dt, pos_scaler=0.5
+                self.vel_setpoint[0] + vx_set, est_vx, dt, d_scaler=0.2
             )
             pitch_acc = self.pd_vy.update_pid(
-                self.vel_setpoint[1] + vy_set, est_vy, dt, pos_scaler=0.5
+                self.vel_setpoint[1] + vy_set, est_vy, dt, d_scaler=0.2
             )
         else:
             roll_acc = self.pd_vx.update_pid(self.vel_setpoint[0] + vx_set, est_vx, dt)
@@ -147,19 +168,26 @@ class StewartPlatformController:
             np.arcsin(np.clip(roll_acc / self.a_to_angle_factor, -1, 1))
         )
 
-        print(f"pitch (2D): {abs(pitch_des- plate_pitch):.3f}, ")
+        print(f"pitch (2D): {abs(pitch_des):.3f}, ")
         # Inner loop (Plate orientation PID)
-        integral_plate = True
-        if math.sqrt(est_x**2 + est_y**2) < 0.014:
-            integral_plate = False
-        pitch_out = self.pid_pitch.update_pid(
-            pitch_des, plate_pitch, dt, deadband=0.5, integral_term=integral_plate
-        )
-        roll_out = self.pid_roll.update_pid(
-            roll_des, plate_roll, dt, deadband=0.5, integral_term=integral_plate
-        )
+        # integral_plate = True
+        # if (
+        #     math.sqrt(est_x**2 + est_y**2) < 0.012
+        #     or math.sqrt(est_x**2 + est_y**2) > 0.10
+        # ):
+        #     integral_plate = False
+        # pitch_out = self.pid_pitch.update_pid(
+        #     pitch_des, plate_pitch, dt, deadband=0.5, integral_term=integral_plate
+        # )
+        # roll_out = self.pid_roll.update_pid(
+        #     roll_des, plate_roll, dt, deadband=0.5, integral_term=integral_plate
+        # )
 
         # Z-axis offset
         z_out = self.z_setpoint
+        # self.time += dt*8
+        # self.ball_setpoint[0] = math.cos(self.time)*0.04
+        # self.ball_setpoint[1] = math.sin(self.time)*0.04
+        # print(self.ball_setpoint[0])
 
-        return pitch_out, roll_out, z_out
+        return pitch_des, roll_des, z_out

@@ -59,12 +59,14 @@ class CameraThread(threading.Thread):
                     self.apriltag_angles_queue,
                     {"pitch": pitch, "roll": roll, "used_previous": used_previous},
                 )
-            if center_3d is not None:
-                self.tag_detector.draw_plate_center(frame, center_3d)
             # --- Ball detection ---
             ball_data, raw_ball_data = self.detect_ball(
                 frame, center_3d=center_3d, apriltag_position=tag_positions
             )
+
+            # Visualization overlays
+            if center_3d is not None:
+                self.tag_detector.draw_plate_center(frame, center_3d)
             if ball_data is not None:
                 self._put_in_queue(self.ball_kinematics_queue, ball_data)
                 self.ball_distance_calc.draw_visualization(frame, ball_data["results"])

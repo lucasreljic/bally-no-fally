@@ -1,1 +1,1 @@
-{   "servo": {"pca9685": {"channel": 0, "min_angle": -45, "max_angle": 45}}}
+{   "servo": {"pca9685": {"channel": 0, "min_angle": -52, "max_angle": 38}}}

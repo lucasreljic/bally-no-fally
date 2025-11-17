@@ -253,7 +253,7 @@ class BallDetector:
         size_based_z = (ball_radius_m * focal_length) / radius_px
 
         # Blend the two Z estimates (favor reference depth but adjust with size)
-        alpha = 0.7  # Weight for reference depth
+        alpha = 1.0  # Weight for reference depth
         final_z = alpha * estimated_z + (1 - alpha) * size_based_z
 
         # Recalculate X,Y with refined Z
